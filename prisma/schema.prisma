@@ -828,4 +828,20 @@ model SocietyDocument {
   unit             Unit?     @relation(fields: [unitId], references: [id], onDelete: SetNull)
   uploadedByUser   User      @relation("DocumentUploadedByUser", fields: [uploadedByUserId], references: [id], onDelete: Cascade)
 }
+
+// ==========================================
+// 15. AUTHENTICATION & OTP (SECURITY)
+// ==========================================
+
+model OtpVerification {
+  id          String   @id @default(uuid())
+  destination String   // Email or phone number
+  otpHash     String   // Salted HMAC-SHA256 hash
+  expiresAt   DateTime
+  attempts    Int      @default(0)
+  isUsed      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@index([destination])
+}
 

@@ -2,13 +2,35 @@ import { Router } from "express";
 import { validate } from "../../middleware/validate.middleware";
 import { authenticate } from "../../middleware/auth.middleware";
 import * as authController from "./auth.controller";
-import { loginSchema } from "./auth.validation";
+import { loginSchema, sendOtpSchema, verifyOtpSchema } from "./auth.validation";
 
 const router = Router();
 
 /**
+ * @route   POST /api/v1/auth/send-otp
+ * @desc    Generate secure 6-digit OTP and dispatch via Nodemailer email
+ * @access  Public
+ */
+router.post(
+  "/send-otp",
+  validate({ body: sendOtpSchema }),
+  authController.sendOtp
+);
+
+/**
+ * @route   POST /api/v1/auth/verify-otp
+ * @desc    Verify 6-digit cryptographic OTP and issue JWT access token
+ * @access  Public
+ */
+router.post(
+  "/verify-otp",
+  validate({ body: verifyOtpSchema }),
+  authController.verifyOtp
+);
+
+/**
  * @route   POST /api/v1/auth/login
- * @desc    Authenticate user by phone number and return JWT token
+ * @desc    Authenticate user by phone or email + OTP/password
  * @access  Public
  */
 router.post(
