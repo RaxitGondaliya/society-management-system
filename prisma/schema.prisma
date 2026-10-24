@@ -1,0 +1,831 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==========================================
+// 1. SOCIETY, UNITS & MEMBERSHIP (MODULE 1)
+// ==========================================
+
+model Society {
+  id                 String   @id @default(uuid())
+  name               String
+  code               String   @unique
+  propertyType       String   // 'FLAT', 'ROW_HOUSE', 'VILLA'
+  address            String
+  latitude           Decimal?
+  longitude          Decimal?
+  bankAccountNo      String?
+  bankIfsc           String?
+  bankBeneficiaryName String?
+  upiId              String?
+  subscriptionPlan   String   @default("ACTIVE")
+  createdAt          DateTime @default(now())
+
+  sections           SectionWing[]
+  units              Unit[]
+  maintenanceBills   MaintenanceBill[]
+  events             Event[]
+  amenities          Amenity[]
+  visitors           Visitor[]
+  notices            Notice[]
+  polls              Poll[]
+  complaints         Complaint[]
+  parkingSlots       ParkingSlot[]
+  dailyHelpers       DailyHelper[]
+  societyStaff       SocietyStaff[]
+  payrollDisbursements PayrollDisbursement[]
+  generalExpenses    GeneralSocietyExpense[]
+  staffMembers       StaffMember[]
+  staffAttendance    StaffAttendance[]
+  assets             Asset[]
+  assetMaintenanceLogs AssetMaintenanceRecord[]
+  inventoryItems     InventoryItem[]
+  residentVehicles   ResidentVehicle[]
+  vehicleGateLogs    VehicleGateMovementLog[]
+  parkingViolations  ParkingViolation[]
+  documents          SocietyDocument[]
+  emergencyContacts  EmergencyContact[]
+  emergencyIncidents EmergencyIncident[]
+}
+
+model SectionWing {
+  id        String   @id @default(uuid())
+  societyId String
+  name      String   // 'Wing A', 'Tower 2', 'Section B'
+  createdAt DateTime @default(now())
+
+  society   Society  @relation(fields: [societyId], references: [id], onDelete: Cascade)
+  units     Unit[]
+  notices   Notice[]
+}
+
+model Unit {
+  id              String   @id @default(uuid())
+  societyId       String
+  sectionWingId   String
+  unitNumber      String   // '1001', '1002', 'Villa-12'
+  floorNumber     Int?
+  occupancyStatus String   @default("VACANT") // 'OCCUPIED_OWNER', 'OCCUPIED_TENANT', 'VACANT'
+  createdAt       DateTime @default(now())
+
+  society         Society  @relation(fields: [societyId], references: [id], onDelete: Cascade)
+  sectionWing     SectionWing @relation(fields: [sectionWingId], references: [id], onDelete: Cascade)
+  
+  members         UnitMember[]
+  familyMembers   FamilyMember[]
+  bills           MaintenanceBill[]
+  eventRsvps      EventRsvp[]
+  amenityBookings AmenityBooking[]
+  visitors        Visitor[]
+  noticeAcks      NoticeAcknowledgement[]
+  pollVotes       PollVote[]
+  complaints      Complaint[]
+  parkingSlots    ParkingSlot[]
+  dailyHelpers    DailyHelper[]
+  staffAssignments StaffUnitAssignment[]
+  staffReviews     StaffReview[]
+  vehicles         ResidentVehicle[]
+  parkingViolations ParkingViolation[]
+  documents        SocietyDocument[]
+  emergencyIncidents EmergencyIncident[]
+
+  @@unique([sectionWingId, unitNumber])
+}
+
+model User {
+  id        String   @id @default(uuid())
+  phone     String   @unique
+  email     String?  @unique
+  fullName  String
+  role      String   // 'SUPER_ADMIN', 'SUB_ADMIN', 'RESIDENT', 'GUARD'
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  unitMembers          UnitMember[]
+  billsPaid            MaintenanceBill[]       @relation("PaidByUser")
+  cashCollectedBills   MaintenanceBill[]       @relation("CashCollectorUser")
+  createdEvents        Event[]
+  submittedRsvps       EventRsvp[]             @relation("RsvpSubmittedByUser")
+  cashCollectedRsvps   EventRsvp[]             @relation("RsvpCashCollectorUser")
+  amenityBookings      AmenityBooking[]
+  guardedVisitors      Visitor[]
+  noticeAcks           NoticeAcknowledgement[]
+  pollVotes            PollVote[]
+  raisedComplaints     Complaint[]             @relation("ComplaintRaisedByUser")
+  assignedComplaints   Complaint[]             @relation("ComplaintAssignedStaff")
+  staffReviews         StaffReview[]
+  assetMaintenanceLogged AssetMaintenanceRecord[] @relation("AssetMaintenanceLoggedBy")
+  inventoryStockAdjusted InventoryStockLog[] @relation("InventoryStockAdjustedBy")
+  vehicleGateLogs      VehicleGateMovementLog[] @relation("VehicleGateLoggedBy")
+  parkingViolationsReported ParkingViolation[] @relation("ParkingViolationReportedBy")
+  uploadedDocuments    SocietyDocument[] @relation("DocumentUploadedByUser")
+  sosReportedIncidents EmergencyIncident[] @relation("SosReportedByUser")
+  sosAcknowledgedIncidents EmergencyIncident[] @relation("SosAcknowledgedByUser")
+  sosResolvedIncidents EmergencyIncident[] @relation("SosResolvedByUser")
+}
+
+model UnitMember {
+  id                 String    @id @default(uuid())
+  unitId             String
+  userId             String
+  memberType         String    // 'OWNER', 'TENANT'
+  isPrimaryHead      Boolean   @default(false)
+  approvalStatus     String    @default("PENDING") // 'PENDING', 'APPROVED', 'REJECTED', 'DEACTIVATED'
+  deactivatedAt      DateTime?
+  deactivationReason String?   // 'SOLD_PROPERTY', 'TENANT_MOVE_OUT'
+  createdAt          DateTime  @default(now())
+
+  unit Unit @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model FamilyMember {
+  id                 String   @id @default(uuid())
+  unitId             String
+  fullName           String
+  age                Int?
+  relation           String   // 'Wife', 'Son', 'Mother'
+  phone              String?
+  isEmergencyContact Boolean  @default(false)
+  createdAt          DateTime @default(now())
+
+  unit Unit @relation(fields: [unitId], references: [id], onDelete: Cascade)
+}
+
+// ==========================================
+// 2. MAINTENANCE BILLING (MODULE 2)
+// ==========================================
+
+model MaintenanceBill {
+  id              String   @id @default(uuid())
+  societyId       String
+  unitId          String
+  numberOfMonths  Int
+  monthsCovered   Json     // e.g. ["2026-02", "2026-03", "2026-04"]
+  amountPerMonth  Decimal
+  totalAmount     Decimal
+  paymentMode     String   // 'UPI_INTENT', 'UPI_QR', 'CASH', 'BANK_TRANSFER'
+  status          String   @default("PENDING") // 'PAID', 'PENDING_VERIFICATION'
+  paidByUserId    String?
+  cashCollectorId String?
+  utrReference    String?
+  receiptNo       String?  @unique
+  paidAt          DateTime @default(now())
+
+  society       Society @relation(fields: [societyId], references: [id], onDelete: Cascade)
+  unit          Unit    @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  paidByUser    User?   @relation("PaidByUser", fields: [paidByUserId], references: [id])
+  cashCollector User?   @relation("CashCollectorUser", fields: [cashCollectorId], references: [id])
+}
+
+// ==========================================
+// 3. EVENTS, RSVP & EXPENSES (MODULE 3)
+// ==========================================
+
+model Event {
+  id                 String    @id @default(uuid())
+  societyId          String
+  title              String
+  description        String?
+  startDate          DateTime
+  endDate            DateTime
+  chargingModel      String    // 'FLAT_PER_HOUSE', 'PER_HEAD'
+  amountRate         Decimal
+  rsvpCutoffTimestamp DateTime?
+  status             String    @default("ONGOING") // 'ONGOING', 'COMPLETED'
+  isPublicBreakdown  Boolean   @default(true)
+  surplusAmount      Decimal   @default(0.00)
+  createdByUserId    String?
+
+  society   Society        @relation(fields: [societyId], references: [id], onDelete: Cascade)
+  createdByUser User?      @relation(fields: [createdByUserId], references: [id])
+  rsvps     EventRsvp[]
+  expenses  EventExpense[]
+}
+
+model EventRsvp {
+  id                   String   @id @default(uuid())
+  eventId              String
+  unitId               String
+  submittedByUserId    String?
+  attendingMembersCount Int
+  outMembers           Json     @default("[]")
+  guestCount           Int      @default(0)
+  totalAmount          Decimal
+  paymentStatus        String   @default("PENDING")
+  paymentMode          String?
+  cashCollectorId      String?
+  createdAt            DateTime @default(now())
+
+  event         Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  unit          Unit  @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  submittedByUser User? @relation("RsvpSubmittedByUser", fields: [submittedByUserId], references: [id])
+  cashCollector User? @relation("RsvpCashCollectorUser", fields: [cashCollectorId], references: [id])
+
+  @@unique([eventId, unitId])
+}
+
+model EventExpense {
+  id                String   @id @default(uuid())
+  eventId           String
+  title             String
+  amount            Decimal
+  billAttachmentUrl String?
+  createdAt         DateTime @default(now())
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+}
+
+// ==========================================
+// 4. AMENITY BOOKINGS (MODULE 4/5)
+// ==========================================
+
+model Amenity {
+  id                     String   @id @default(uuid())
+  societyId              String
+  name                   String
+  description            String?
+  bookingType            String   // 'SLOT_BASED', 'FULL_DAY'
+  chargeType             String   @default("FREE") // 'FREE', 'PAID'
+  capacity               Int      @default(1)
+  feePerHour             Decimal  @default(0.00)
+  feePerDay              Decimal  @default(0.00)
+  rentalFee              Decimal  @default(0.00)
+  cautionDeposit         Decimal  @default(0.00)
+  securityDeposit        Decimal  @default(0.00)
+  openTime               String   @default("06:00")
+  closeTime              String   @default("22:00")
+  rules                  String?
+  cancellationCutoffDays Int      @default(2)
+  isActive               Boolean  @default(true)
+  createdAt              DateTime @default(now())
+
+  society  Society          @relation(fields: [societyId], references: [id], onDelete: Cascade)
+  bookings AmenityBooking[]
+
+  @@unique([societyId, name])
+}
+
+model AmenityBooking {
+  id                  String   @id @default(uuid())
+  bookingReference    String?  @unique
+  amenityId           String
+  unitId              String
+  bookedByUserId      String?
+  bookingDate         DateTime
+  slotDetails         String?  // 'FULL_DAY', '06:00-10:00'
+  startTime           String?
+  endTime             String?
+  purpose             String?
+  attendeesCount      Int?
+  rentalAmount        Decimal?
+  cautionDeposit      Decimal?
+  totalPaid           Decimal?
+  paymentMode         String?
+  status              String   @default("CONFIRMED") // 'CONFIRMED', 'CANCELLED', 'PENDING', 'REJECTED'
+  cancellationReason  String?
+  depositRefundStatus String   @default("PENDING")   // 'REFUNDED', 'FORFEITED', 'NA'
+  createdAt           DateTime @default(now())
+
+  amenity      Amenity @relation(fields: [amenityId], references: [id], onDelete: Cascade)
+  unit         Unit    @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  bookedByUser User?   @relation(fields: [bookedByUserId], references: [id])
+
+  @@unique([amenityId, bookingDate, slotDetails])
+}
+
+// ==========================================
+// 5. VISITOR MANAGEMENT (MODULE 5)
+// ==========================================
+
+model Visitor {
+  id                     String    @id @default(uuid())
+  societyId              String
+  unitId                 String
+  guardUserId            String?
+  category               String    // 'GUEST', 'DELIVERY', 'CAB'
+  visitorName            String?
+  phone                  String?
+  vehicleNumber          String?
+  photoUrl               String?
+  preApprovedPasscode    String?
+  status                 String    @default("PENDING_APPROVAL") // 'PENDING_APPROVAL', 'APPROVED', 'DENIED', 'LEAVE_AT_GATE'
+  entryTime              DateTime  @default(now())
+  exitTime               DateTime?
+  overstayAlertTriggered Boolean   @default(false)
+
+  society   Society @relation(fields: [societyId], references: [id], onDelete: Cascade)
+  unit      Unit    @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  guardUser User?   @relation(fields: [guardUserId], references: [id])
+  vehicleGateLogs VehicleGateMovementLog[]
+}
+
+// ==========================================
+// 6. NOTICES & SECRET POLLS (MODULE 6)
+// ==========================================
+
+model Notice {
+  id                String    @id @default(uuid())
+  societyId         String
+  title             String
+  content           String
+  category          String    @default("GENERAL") // 'GENERAL', 'MAINTENANCE', 'EVENT', 'EMERGENCY', 'FINANCIAL', 'RULES'
+  priority          String    @default("NORMAL")  // 'NORMAL', 'URGENT', 'EMERGENCY'
+  targetAudience    String    @default("ALL")     // 'ALL', 'OWNERS_ONLY', 'TENANTS_ONLY', 'SECTION_SPECIFIC'
+  targetWings       String?                       // JSON array of wing names or IDs
+  sectionWingId     String?
+  attachmentUrl     String?
+  attachments       String?                       // JSON array of URLs
+  expiresAt         DateTime?
+  publishedByUserId String?
+  isActive          Boolean   @default(true)
+  createdAt         DateTime  @default(now())
+
+  society          Society                 @relation(fields: [societyId], references: [id], onDelete: Cascade)
+  sectionWing      SectionWing?            @relation(fields: [sectionWingId], references: [id])
+  acknowledgements NoticeAcknowledgement[]
+}
+
+model NoticeAcknowledgement {
+  id             String   @id @default(uuid())
+  noticeId       String
+  unitId         String
+  userId         String?
+  acknowledgedAt DateTime @default(now())
+
+  notice Notice @relation(fields: [noticeId], references: [id], onDelete: Cascade)
+  unit   Unit   @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  user   User?  @relation(fields: [userId], references: [id])
+
+  @@unique([noticeId, unitId])
+}
+
+model Poll {
+  id              String    @id @default(uuid())
+  societyId       String
+  question        String
+  description     String?
+  pollPrivacyType String    @default("PUBLIC_TRANSPARENT") // 'ANONYMOUS_SECRET_BALLOT', 'PUBLIC_TRANSPARENT'
+  isSecret        Boolean   @default(false)
+  eligibility     String    @default("ALL_RESIDENTS")      // 'ALL_RESIDENTS', 'OWNERS_ONLY'
+  votingScope     String    @default("ONE_VOTE_PER_UNIT")  // 'ONE_VOTE_PER_UNIT', 'ONE_VOTE_PER_MEMBER'
+  startDate       DateTime  @default(now())
+  endDate         DateTime?
+  cutoffTimestamp DateTime
+  status          String    @default("ACTIVE")             // 'ACTIVE', 'CLOSED'
+  createdAt       DateTime  @default(now())
+
+  society Society      @relation(fields: [societyId], references: [id], onDelete: Cascade)
+  options PollOption[]
+  votes   PollVote[]
+}
+
+model PollOption {
+  id        String @id @default(uuid())
+  pollId    String
+  optionText String
+  voteCount Int    @default(0)
+
+  poll  Poll       @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  votes PollVote[]
+}
+
+model PollVote {
+  id             String   @id @default(uuid())
+  pollId         String
+  unitId         String
+  pollOptionId   String
+  votedByUserId  String?  // Null for ANONYMOUS polls
+  createdAt      DateTime @default(now())
+
+  poll       Poll       @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  unit       Unit       @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  pollOption PollOption @relation(fields: [pollOptionId], references: [id], onDelete: Cascade)
+  votedByUser User?     @relation(fields: [votedByUserId], references: [id])
+
+  @@unique([pollId, unitId])
+}
+
+// ==========================================
+// 7. COMPLAINTS / HELPDESK (MODULE 7)
+// ==========================================
+
+model Complaint {
+  id                 String    @id @default(uuid())
+  ticketNumber       String?   @unique
+  societyId          String
+  unitId             String?
+  raisedByUserId     String?
+  scope              String    // 'PERSONAL', 'COMMUNITY' (or 'PERSONAL_UNIT', 'COMMON_AREA')
+  category           String    // 'PLUMBING', 'ELECTRICAL', 'CARPENTRY', 'LIFT', 'SECURITY', 'PARKING', 'NOISE', 'COMMON_AREA', 'OTHER'
+  priority           String    @default("MEDIUM") // 'LOW', 'MEDIUM', 'HIGH', 'URGENT'
+  title              String
+  description        String?
+  photoUrl           String?
+  status             String    @default("OPEN") // 'OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED', 'REJECTED'
+  assignedStaffId    String?
+  resolutionNotes    String?
+  resolutionProofUrl String?
+  resolvedAt         DateTime?
+  rating             Int?
+  feedback           String?
+  createdAt          DateTime  @default(now())
+
+  society       Society @relation(fields: [societyId], references: [id], onDelete: Cascade)
+  unit          Unit?   @relation(fields: [unitId], references: [id])
+  raisedByUser  User?   @relation("ComplaintRaisedByUser", fields: [raisedByUserId], references: [id])
+  assignedStaff User?   @relation("ComplaintAssignedStaff", fields: [assignedStaffId], references: [id])
+}
+
+// ==========================================
+// 8. PARKING SLOTS & VEHICLE TRACKING (MODULE 9)
+// ==========================================
+
+model ParkingSlot {
+  id              String   @id @default(uuid())
+  societyId       String
+  slotNumber      String   // e.g. 'B1-P102'
+  zone            String   // 'BASEMENT_1', 'BASEMENT_2', 'GROUND', 'STILT', 'OPEN_PODIUM'
+  vehicleType     String   // 'TWO_WHEELER', 'FOUR_WHEELER', 'HEAVY_VEHICLE'
+  slotType        String   @default("DEDICATED_RESIDENT") // 'DEDICATED_RESIDENT', 'GUEST_VISITOR', 'COMMERCIAL_SERVICE'
+  hasEvCharging   Boolean  @default(false)
+  isAllocated     Boolean  @default(false)
+  allocatedUnitId String?
+  allocationType  String?  // 'PERMANENT_DEEDED', 'ANNUAL_LEASE', 'TEMPORARY'
+  monthlyFee      Float    @default(0.0)
+  allocatedAt     DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  society         Society          @relation(fields: [societyId], references: [id], onDelete: Cascade)
+  allocatedUnit   Unit?            @relation(fields: [allocatedUnitId], references: [id])
+  vehicles        ResidentVehicle[]
+  violations      ParkingViolation[]
+
+  @@unique([societyId, slotNumber])
+}
+
+model ResidentVehicle {
+  id            String   @id @default(uuid())
+  societyId     String
+  unitId        String
+  parkingSlotId String?
+  licensePlate  String   // Normalized uppercase (e.g. 'GJ01AB1234')
+  vehicleType   String   // 'TWO_WHEELER', 'FOUR_WHEELER'
+  makeModel     String   // e.g. 'Honda City White'
+  rfidTag       String?
+  fastagId      String?
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  society       Society                 @relation(fields: [societyId], references: [id], onDelete: Cascade)
+  unit          Unit                    @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  parkingSlot   ParkingSlot?            @relation(fields: [parkingSlotId], references: [id])
+  gateLogs      VehicleGateMovementLog[]
+
+  @@unique([societyId, licensePlate])
+}
+
+model VehicleGateMovementLog {
+  id                 String   @id @default(uuid())
+  societyId          String
+  licensePlate       String
+  action             String   // 'ENTRY', 'EXIT'
+  gateNumber         String?
+  isAuthorized       Boolean  @default(true)
+  authorizationType  String   @default("REGISTERED_RESIDENT") // 'REGISTERED_RESIDENT', 'APPROVED_VISITOR', 'VISITOR_UNSCHEDULED'
+  residentVehicleId  String?
+  visitorId          String?
+  loggedByUserId     String?
+  timestamp          DateTime @default(now())
+
+  society            Society          @relation(fields: [societyId], references: [id], onDelete: Cascade)
+  residentVehicle    ResidentVehicle? @relation(fields: [residentVehicleId], references: [id], onDelete: SetNull)
+  visitor            Visitor?         @relation(fields: [visitorId], references: [id], onDelete: SetNull)
+  loggedByUser       User?            @relation("VehicleGateLoggedBy", fields: [loggedByUserId], references: [id], onDelete: SetNull)
+}
+
+model ParkingViolation {
+  id               String   @id @default(uuid())
+  societyId        String
+  slotId           String
+  vehicleNumber    String
+  unitId           String?
+  violationType    String   // 'UNAUTHORIZED_SLOT', 'PARKED_WITHOUT_PERMIT', 'BLOCKED_DRIVEWAY', 'ILLEGAL_EV_CHARGING'
+  penaltyAmount    Float    @default(0.0)
+  status           String   @default("REPORTED") // 'REPORTED', 'RESOLVED', 'FINE_LEVIED', 'DISMISSED'
+  photoUrl         String?
+  notes            String?
+  reportedByUserId String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  society          Society     @relation(fields: [societyId], references: [id], onDelete: Cascade)
+  slot             ParkingSlot @relation(fields: [slotId], references: [id], onDelete: Cascade)
+  unit             Unit?       @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  reportedByUser   User?       @relation("ParkingViolationReportedBy", fields: [reportedByUserId], references: [id], onDelete: SetNull)
+}
+
+// ==========================================
+// 9. DAILY DOMESTIC HELP (MODULE 9)
+// ==========================================
+
+model DailyHelper {
+  id           String   @id @default(uuid())
+  societyId    String
+  unitId       String?
+  fullName     String
+  phone        String?
+  workCategory String   // 'COOK', 'MAID', 'CAR_CLEANER', 'GARDENER'
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  society Society @relation(fields: [societyId], references: [id], onDelete: Cascade)
+  unit    Unit?   @relation(fields: [unitId], references: [id])
+}
+
+// ==========================================
+// 10. PAYROLL & GENERAL EXPENSES (MODULE 11 & 12)
+// ==========================================
+
+model SocietyStaff {
+  id            String   @id @default(uuid())
+  societyId     String
+  fullName      String
+  role          String   // 'SECURITY_GUARD', 'SWEEPER', 'ELECTRICIAN'
+  monthlySalary Decimal
+  bankAccountNo String?
+  upiId         String?
+  isActive      Boolean  @default(true)
+
+  society       Society               @relation(fields: [societyId], references: [id], onDelete: Cascade)
+  disbursements PayrollDisbursement[]
+}
+
+model PayrollDisbursement {
+  id             String   @id @default(uuid())
+  societyId      String
+  staffId        String
+  disbursedMonth String   // '2026-03'
+  amount         Decimal
+  paymentMode    String   // 'ONLINE_BANK', 'UPI', 'CASH'
+  transactionRef String?
+  disbursedAt    DateTime @default(now())
+
+  society Society      @relation(fields: [societyId], references: [id], onDelete: Cascade)
+  staff   SocietyStaff @relation(fields: [staffId], references: [id], onDelete: Cascade)
+}
+
+model GeneralSocietyExpense {
+  id                String   @id @default(uuid())
+  societyId         String
+  category          String   // 'ELECTRICITY_BILL', 'LIFT_AMC', 'GARDEN_MAINTENANCE'
+  title             String
+  amount            Decimal
+  billAttachmentUrl String?
+  expenseDate       DateTime
+  createdAt         DateTime @default(now())
+
+  society Society @relation(fields: [societyId], references: [id], onDelete: Cascade)
+}
+
+// ==========================================
+// 11. EMERGENCY SOS & INCIDENT MANAGEMENT (MODULE 11)
+// ==========================================
+
+model EmergencyContact {
+  id             String   @id @default(uuid())
+  societyId      String
+  serviceName    String   // 'Civil Hospital Emergency', 'Navrangpura Police Station', 'Lift Breakdown Helpline'
+  category       String   // 'HOSPITAL', 'AMBULANCE', 'POLICE', 'FIRE_STATION', 'LIFT_AGENCY', 'SECURITY_CHIEF', 'OTHER'
+  phone          String   // 3 to 15 digits / hotline
+  alternatePhone String?
+  address        String?
+  contactPerson  String?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  society        Society  @relation(fields: [societyId], references: [id], onDelete: Cascade)
+}
+
+model EmergencyIncident {
+  id                   String    @id @default(uuid())
+  incidentNumber       String?   @unique // e.g. 'SOS-202610-0001'
+  societyId            String
+  unitId               String
+  reportedByUserId     String
+  emergencyType        String    // 'MEDICAL_EMERGENCY', 'FIRE_HAZARD', 'LIFT_ENTRAPMENT', 'THEFT_SECURITY_BREACH', 'GAS_LEAK', 'OTHER'
+  severity             String    @default("CRITICAL") // 'HIGH', 'CRITICAL'
+  status               String    @default("TRIGGERED") // 'TRIGGERED', 'ACKNOWLEDGED', 'RESPONDING', 'RESOLVED', 'FALSE_ALARM'
+  notes                String?
+  acknowledgedByUserId String?
+  acknowledgedAt       DateTime?
+  resolvedByUserId     String?
+  resolvedAt           DateTime?
+  resolutionNotes      String?
+  responderActionTaken String?
+  durationMinutes      Int?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  society              Society   @relation(fields: [societyId], references: [id], onDelete: Cascade)
+  unit                 Unit      @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  reportedByUser       User      @relation("SosReportedByUser", fields: [reportedByUserId], references: [id], onDelete: Cascade)
+  acknowledgedByUser   User?     @relation("SosAcknowledgedByUser", fields: [acknowledgedByUserId], references: [id], onDelete: SetNull)
+  resolvedByUser       User?     @relation("SosResolvedByUser", fields: [resolvedByUserId], references: [id], onDelete: SetNull)
+}
+
+// ==========================================
+// 12. STAFF & DOMESTIC HELP (MODULE 7)
+// ==========================================
+
+model StaffMember {
+  id                       String   @id @default(uuid())
+  societyId                String
+  staffCode                String?  @unique
+  fullName                 String
+  phone                    String
+  staffType                String   // 'MAID', 'DRIVER', 'COOK', 'CLEANER', 'GARDENER', 'SECURITY_GUARD', 'TECHNICIAN', 'OTHER'
+  idProofType              String?  // 'AADHAAR', 'PAN', 'VOTER_ID', 'DRIVING_LICENSE'
+  idProofNumber            String?
+  policeVerificationStatus String   @default("PENDING") // 'PENDING', 'VERIFIED', 'REJECTED'
+  photoUrl                 String?
+  emergencyContact         String?
+  rating                   Float    @default(0.0)
+  totalReviews             Int      @default(0)
+  isActive                 Boolean  @default(true)
+  createdAt                DateTime @default(now())
+
+  society        Society               @relation(fields: [societyId], references: [id], onDelete: Cascade)
+  assignedUnits  StaffUnitAssignment[]
+  attendance     StaffAttendance[]
+  reviews        StaffReview[]
+
+  @@unique([societyId, phone, staffType])
+}
+
+model StaffUnitAssignment {
+  id             String   @id @default(uuid())
+  staffId        String
+  unitId         String
+  jobDescription String?
+  assignedAt     DateTime @default(now())
+  isActive       Boolean  @default(true)
+
+  staff StaffMember @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  unit  Unit        @relation(fields: [unitId], references: [id], onDelete: Cascade)
+
+  @@unique([staffId, unitId])
+}
+
+model StaffAttendance {
+  id              String    @id @default(uuid())
+  staffId         String
+  societyId       String
+  attendanceDate  DateTime
+  checkInTime     DateTime
+  checkOutTime    DateTime?
+  durationMinutes Int?
+  guardUserId     String?
+  createdAt       DateTime  @default(now())
+
+  staff   StaffMember @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  society Society     @relation(fields: [societyId], references: [id], onDelete: Cascade)
+}
+
+model StaffReview {
+  id        String   @id @default(uuid())
+  staffId   String
+  unitId    String
+  userId    String
+  rating    Int
+  review    String?
+  createdAt DateTime @default(now())
+
+  staff StaffMember @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  unit  Unit        @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  user  User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([staffId, unitId, userId])
+}
+
+// ==========================================
+// 13. ASSETS, EQUIPMENT & INVENTORY (MODULE 8)
+// ==========================================
+
+model Asset {
+  id              String   @id @default(uuid())
+  societyId       String
+  assetCode       String?  @unique
+  name            String
+  category        String   // 'ELECTRICAL', 'PLUMBING', 'ELEVATOR', 'SECURITY_SYSTEM', 'FIRE_SAFETY', 'GYM_EQUIPMENT', 'OTHER'
+  location        String
+  serialNumber    String?
+  modelNumber     String?
+  manufacturer    String?
+  purchaseDate    DateTime
+  purchaseCost    Float?
+  warrantyExpiry  DateTime?
+  status          String   @default("OPERATIONAL") // 'OPERATIONAL', 'UNDER_MAINTENANCE', 'DECOMMISSIONED'
+  nextServiceDue  DateTime?
+  amcVendorName   String?
+  amcVendorPhone  String?
+  amcStartDate    DateTime?
+  amcEndDate      DateTime?
+  amcCost         Float?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  society         Society                @relation(fields: [societyId], references: [id], onDelete: Cascade)
+  maintenanceLogs AssetMaintenanceRecord[]
+
+  @@unique([societyId, serialNumber])
+}
+
+model AssetMaintenanceRecord {
+  id              String   @id @default(uuid())
+  assetId         String
+  societyId       String
+  maintenanceType String   // 'PREVENTIVE_AMC', 'BREAKDOWN_REPAIR', 'ROUTINE_INSPECTION'
+  serviceDate     DateTime
+  cost            Float    @default(0.0)
+  servicedBy      String
+  notes           String?
+  invoiceNumber   String?
+  nextServiceDue  DateTime?
+  loggedByUserId  String?
+  createdAt       DateTime @default(now())
+
+  asset           Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  society         Society  @relation(fields: [societyId], references: [id], onDelete: Cascade)
+  loggedBy        User?    @relation("AssetMaintenanceLoggedBy", fields: [loggedByUserId], references: [id], onDelete: SetNull)
+}
+
+model InventoryItem {
+  id               String   @id @default(uuid())
+  societyId        String
+  itemCode         String?  @unique
+  itemName         String
+  category         String   // 'LIGHTING', 'PLUMBING_PARTS', 'CLEANING_CHEMICALS', 'ELECTRICAL_PARTS', 'STATIONERY', 'OTHER'
+  quantity         Int      @default(0)
+  unitOfMeasure    String   // 'PIECES', 'KG', 'LITERS', 'BOXES', 'METERS'
+  minimumThreshold Int      @default(5)
+  unitCost         Float?
+  isLowStock       Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  society          Society             @relation(fields: [societyId], references: [id], onDelete: Cascade)
+  stockLogs        InventoryStockLog[]
+
+  @@unique([societyId, itemName])
+}
+
+model InventoryStockLog {
+  id                String   @id @default(uuid())
+  inventoryItemId   String
+  quantityChange    Int
+  quantityAfter     Int
+  reason            String
+  adjustedByUserId  String?
+  createdAt         DateTime @default(now())
+
+  inventoryItem     InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
+  adjustedByUser    User?         @relation("InventoryStockAdjustedBy", fields: [adjustedByUserId], references: [id], onDelete: SetNull)
+}
+
+// ==========================================
+// 14. LEGAL, DOCUMENTS & CONTRACTS (MODULE 10)
+// ==========================================
+
+model SocietyDocument {
+  id               String    @id @default(uuid())
+  societyId        String
+  title            String
+  documentType     String    // 'SOCIETY_BYELAWS', 'AGM_MOM', 'FIRE_SAFETY_NOC', 'BUILDING_INSURANCE', 'FINANCIAL_AUDIT', 'SALE_DEED', 'RENT_AGREEMENT', 'POSSESSION_LETTER', 'IDENTITY_PROOF', 'OTHER'
+  accessLevel      String    @default("PUBLIC_RESIDENTS") // 'PUBLIC_RESIDENTS', 'ADMIN_ONLY', 'UNIT_PRIVATE'
+  fileUrl          String
+  fileSizeBytes    Int?
+  mimeType         String?
+  unitId           String?
+  expiryDate       DateTime?
+  description      String?
+  tags             String[]  @default([])
+  isArchived       Boolean   @default(false)
+  archivedAt       DateTime?
+  uploadedByUserId String
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  society          Society   @relation(fields: [societyId], references: [id], onDelete: Cascade)
+  unit             Unit?     @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  uploadedByUser   User      @relation("DocumentUploadedByUser", fields: [uploadedByUserId], references: [id], onDelete: Cascade)
+}
+
