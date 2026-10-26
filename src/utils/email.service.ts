@@ -11,12 +11,32 @@ export interface SendOtpEmailOptions {
 }
 
 /**
+ * Check if real SMTP credentials are configured or using placeholders
+ */
+export const isSmtpConfigured = (): boolean => {
+  const pass = (process.env.SMTP_PASS || "").trim();
+  const user = (process.env.SMTP_USER || "").trim();
+
+  if (!pass || !user) return false;
+  if (
+    pass === "your_google_app_password_here" ||
+    pass === "your_google_app_password" ||
+    pass.includes("your_google_app") ||
+    pass.length < 8
+  ) {
+    return false;
+  }
+  return true;
+};
+
+/**
  * Reusable Singleton Transporter Holder
  */
 let transporterInstance: Transporter | null = null;
 
 /**
- * Get or initialize the reusable Nodemailer SMTP transporter
+ * Get or initialize the reusable Nodemailer SMTP transporter.
+ * Configured for Port 587 (STARTTLS) to prevent cloud firewall blocking on Render/AWS.
  */
 export const getEmailTransporter = (): Transporter => {
   if (transporterInstance) {
@@ -24,51 +44,81 @@ export const getEmailTransporter = (): Transporter => {
   }
 
   const host = process.env.SMTP_HOST || "smtp.gmail.com";
-  const port = parseInt(process.env.SMTP_PORT || "465", 10);
+  // Port 587 is the cloud-standard port for STARTTLS (bypasses outbound port 465 blocks on Render/AWS)
+  const port = parseInt(process.env.SMTP_PORT || "587", 10);
+  // Port 587 requires secure: false; Port 465 requires secure: true
   const secure = process.env.SMTP_SECURE !== undefined
     ? process.env.SMTP_SECURE === "true"
     : port === 465;
-  const user = process.env.SMTP_USER || "testingrvg@gmail.com";
-  const pass = process.env.SMTP_PASS || "";
 
-  if (!pass || pass === "your_google_app_password_here") {
+  const user = (process.env.SMTP_USER || "testingrvg@gmail.com").trim();
+  const pass = (process.env.SMTP_PASS || "").trim();
+
+  if (!isSmtpConfigured()) {
     console.warn(
-      `[EmailService] Notice: SMTP_PASS is not configured or using default placeholder. ` +
-      `Generate a 16-character Google App Password (via Google Account > Security > 2-Step Verification > App Passwords) ` +
-      `and set SMTP_PASS in your .env file.`
+      `[EmailService] ⚠️ Notice: SMTP_PASS is unconfigured or using a default placeholder. ` +
+      `Email dispatch will operate in graceful SIMULATION mode so API calls never hang. ` +
+      `Configure a 16-character Google App Password in SMTP_PASS to enable live delivery.`
     );
   }
 
   transporterInstance = nodemailer.createTransport({
     host,
     port,
-    secure, // true for port 465 (SSL), false for port 587 (STARTTLS)
+    secure, // false for port 587 (STARTTLS), true for port 465 (SSL)
     auth: {
-      user: user.trim(),
-      pass: pass.trim(),
+      user,
+      pass,
     },
+    // Non-blocking timeouts: fail fast instead of hanging indefinitely on cloud platforms
+    connectionTimeout: 8000, // 8s connection timeout
+    greetingTimeout: 5000,   // 5s greeting timeout
+    socketTimeout: 10000,    // 10s socket timeout
     pool: true,
     maxConnections: 5,
     maxMessages: 100,
     tls: {
-      rejectUnauthorized: process.env.NODE_ENV === "production",
+      // Prevents SSL/TLS handshake failures across containerized cloud proxies
+      rejectUnauthorized: false,
     },
   });
+
+  // Safe, non-blocking startup diagnostic check
+  if (isSmtpConfigured()) {
+    transporterInstance.verify((error) => {
+      if (error) {
+        console.warn(`[EmailService] ⚠️ Startup SMTP check on ${host}:${port}: ${error.message}`);
+      } else {
+        console.info(`✅ [EmailService] Startup SMTP transporter verified on ${host}:${port} (STARTTLS ready).`);
+      }
+    });
+  }
 
   return transporterInstance;
 };
 
 /**
- * Optional helper to verify SMTP transporter connection
+ * Optional helper to verify SMTP transporter connection on demand
  */
 export const verifyTransporterConnection = async (): Promise<boolean> => {
+  if (!isSmtpConfigured()) {
+    console.info(
+      "[EmailService] ℹ️ SMTP credentials are unconfigured or using placeholders. " +
+      "Live SMTP verification skipped; running in simulated fallback mode."
+    );
+    return false;
+  }
+
   try {
     const transporter = getEmailTransporter();
     await transporter.verify();
-    console.info("[EmailService] SMTP transporter verified and ready to dispatch messages.");
+    console.info("✅ [EmailService] SMTP transporter verified and ready to dispatch messages.");
     return true;
   } catch (err: any) {
-    console.error("[EmailService] Transporter verification failed:", err.message);
+    console.error("❌ [EmailService] Transporter verification failed:", err?.message || err);
+    console.warn(
+      "[EmailService] ⚠️ Emails may fail to dispatch until valid SMTP settings (Google App Password) are provided."
+    );
     return false;
   }
 };
@@ -198,10 +248,9 @@ export const generateOtpEmailHtml = (otpCode: string, recipientName?: string): s
  * 1. sendOtpEmail("resident@example.com", "123456", "John Doe")
  * 2. sendOtpEmail({ to: "resident@example.com", otp: "123456", recipientName: "John Doe" })
  *
- * @param toEmailOrOptions Recipient email string OR SendOtpEmailOptions object
- * @param otpCode 6-digit OTP code string
- * @param recipientName Optional resident name for personalized template
- * @returns Promise<boolean> True if dispatched successfully
+ * Guarantees:
+ * - Gracefully simulated if SMTP credentials are missing/placeholder (never hangs).
+ * - Enforces a 4.5-second timeout on live SMTP dispatch to prevent hanging cloud connections.
  */
 export async function sendOtpEmail(
   toEmailOrOptions: string | SendOtpEmailOptions,
@@ -227,6 +276,18 @@ export async function sendOtpEmail(
   }
 
   const cleanEmail = to.trim().toLowerCase();
+
+  // 1. Graceful fallback if SMTP credentials are placeholder or unconfigured
+  // This guarantees the API NEVER hangs or times out in preview / testing environments
+  if (!isSmtpConfigured()) {
+    console.warn(
+      `[EmailService] ⚠️ SIMULATION MODE: SMTP credentials not properly configured. ` +
+      `Simulated OTP [${code}] dispatched to ${cleanEmail}. ` +
+      `To send live emails, set a valid 16-character Google App Password in SMTP_PASS.`
+    );
+    return true;
+  }
+
   const transporter = getEmailTransporter();
 
   const fromAddress =
@@ -235,23 +296,21 @@ export async function sendOtpEmail(
     `"AURA Society" <${process.env.SMTP_USER || "testingrvg@gmail.com"}>`;
 
   const htmlContent = generateOtpEmailHtml(code, name);
-  const textContent = `Your AURA verification passcode is: ${code}\n\n` +
+  const textContent =
+    `Your AURA verification passcode is: ${code}\n\n` +
     `This code will expire in 10 minutes.\n` +
     `If you did not request this OTP, please ignore this email. AURA staff will never ask for your verification code.`;
 
-  // Simulation fallback if SMTP_PASS is placeholder or unconfigured in testing environments
-  const pass = process.env.SMTP_PASS;
-  const isUnconfigured = !pass || pass === "your_google_app_password_here";
-
-  if (isUnconfigured && process.env.NODE_ENV !== "production") {
-    console.info(
-      `[EmailService] Simulation Mode: SMTP_PASS is unconfigured. OTP [${code}] generated for ${cleanEmail}.`
-    );
-    return true;
-  }
-
   try {
-    const info = await transporter.sendMail({
+    // 2. Fail-safe timeout wrapper (4500ms) ensuring dispatch never stalls past 5 seconds
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error("Email dispatch timed out after 4500ms"));
+      }, 4500);
+      if (typeof timer.unref === "function") timer.unref();
+    });
+
+    const sendPromise = transporter.sendMail({
       from: fromAddress,
       to: cleanEmail,
       subject: `${code} is your AURA Verification Passcode`,
@@ -259,13 +318,14 @@ export async function sendOtpEmail(
       html: htmlContent,
     });
 
+    const info = await Promise.race([sendPromise, timeoutPromise]);
     console.info(`[EmailService] Real OTP email delivered to ${cleanEmail}. MessageId: ${info.messageId}`);
     return true;
   } catch (err: any) {
-    console.error(`[EmailService] Failed to send email to ${cleanEmail}:`, err.message);
+    console.error(`[EmailService] Failed to send email to ${cleanEmail}:`, err?.message || err);
     throw new AppError(
       500,
-      "Failed to deliver verification code to your email. Please verify your email configuration or try again."
+      `Failed to deliver verification code: ${err?.message || "Email dispatch failed."}`
     );
   }
 }

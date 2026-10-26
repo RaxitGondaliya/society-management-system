@@ -8,7 +8,7 @@ const router = Router();
 
 /**
  * @route   POST /api/v1/auth/send-otp
- * @desc    Generate secure 6-digit OTP and dispatch via Nodemailer email
+ * @desc    Generate secure 6-digit OTP and dispatch via Nodemailer email (enforces registered user check)
  * @access  Public
  */
 router.post(
@@ -37,6 +37,16 @@ router.post(
   "/login",
   validate({ body: loginSchema }),
   authController.login
+);
+
+/**
+ * @route   POST /api/v1/auth/logout
+ * @desc    Invalidate active session token and clear cookies
+ * @access  Public / Authenticated
+ */
+router.post(
+  "/logout",
+  authController.logout
 );
 
 /**

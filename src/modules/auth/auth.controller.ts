@@ -6,27 +6,60 @@ import { LoginInput, SendOtpInput, VerifyOtpInput } from "./auth.validation";
 /**
  * Dispatch verification OTP code
  * POST /api/v1/auth/send-otp
- * SECURITY: OTP is dispatched via email and is NEVER returned in the API response.
+ * SECURITY: Enforces pre-login registered user existence validation.
+ * If user does not exist, returns 404 immediately without generating OTP or calling Nodemailer.
  */
 export const sendOtp = async (
   req: Request<unknown, unknown, SendOtpInput>,
   res: Response,
-  next: NextFunction
+  _next: NextFunction
 ): Promise<void> => {
+  if (res.headersSent) return;
+
   try {
-    const result = await authService.requestOtp(req.body);
+    // Fail-safe ceiling timeout to guarantee explicit response under 5 seconds
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error("OTP generation and dispatch timed out (exceeded 4800ms limit)."));
+      }, 4800);
+      if (typeof timer.unref === "function") timer.unref();
+    });
+
+    const result = await Promise.race([
+      authService.requestOtp(req.body),
+      timeoutPromise,
+    ]);
+
     const successMsg =
       result.channel === "email"
-        ? "Verification code has been dispatched to your email address."
-        : "Verification code has been dispatched to your mobile number.";
+        ? "Verification code dispatched to your registered email."
+        : "Verification code dispatched to your registered mobile number.";
 
-    // Strict Security Rule: NEVER return the OTP or internal state in the API response
-    res.status(200).json({
-      success: true,
-      message: successMsg,
-    });
-  } catch (error) {
-    next(error);
+    if (!res.headersSent) {
+      res.status(200).json({
+        success: true,
+        message: successMsg,
+      });
+    }
+  } catch (error: any) {
+    console.error("[AuthController] Failed to dispatch OTP:", error?.message || error);
+
+    if (!res.headersSent) {
+      // Respect operational application errors (e.g., 404 User Not Found, 403 Deactivated)
+      if (error instanceof AppError || error?.statusCode) {
+        const statusCode = error.statusCode || 400;
+        res.status(statusCode).json({
+          success: false,
+          message: error.message,
+        });
+        return;
+      }
+
+      res.status(500).json({
+        success: false,
+        message: "Failed to dispatch email. Please verify SMTP settings.",
+      });
+    }
   }
 };
 
@@ -61,6 +94,38 @@ export const login = async (
     successResponse(res, "Login successful", result, 200);
   } catch (error) {
     next(error);
+  }
+};
+
+/**
+ * Invalidate active session and log out
+ * POST /api/v1/auth/logout
+ */
+export const logout = async (
+  req: Request,
+  res: Response,
+  _next: NextFunction
+): Promise<void> => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      const token = authHeader.split(" ")[1];
+      authService.invalidateSession(token);
+    }
+
+    res.clearCookie("token");
+    res.clearCookie("refreshToken");
+
+    res.status(200).json({
+      success: true,
+      message: "Logged out successfully. Active session ended.",
+    });
+  } catch (error: any) {
+    console.error("[AuthController] Logout error:", error?.message || error);
+    res.status(200).json({
+      success: true,
+      message: "Logged out successfully. Active session ended.",
+    });
   }
 };
 

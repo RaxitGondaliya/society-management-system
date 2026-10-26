@@ -43,6 +43,26 @@ export interface AuthSuccessResult {
   memberships: UnitMembershipInfo[];
 }
 
+/**
+ * In-memory token revocation registry for stateless session invalidation
+ */
+const revokedTokens = new Set<string>();
+
+export const invalidateSession = (token: string): void => {
+  if (token) {
+    revokedTokens.add(token);
+    // Auto purge token from set after 7 days (JWT expiry window)
+    const timer = setTimeout(() => {
+      revokedTokens.delete(token);
+    }, 7 * 24 * 60 * 60 * 1000);
+    if (typeof timer.unref === "function") timer.unref();
+  }
+};
+
+export const isSessionRevoked = (token: string): boolean => {
+  return revokedTokens.has(token);
+};
+
 const userMembershipInclude = {
   unitMembers: {
     where: {
@@ -146,34 +166,53 @@ const buildAuthResult = (user: any): AuthSuccessResult => {
 };
 
 /**
- * 1. Dispatch OTP: Securely generate 6-digit OTP and send via Nodemailer / SMS
- * IMPORTANT: The generated OTP is NEVER returned in the API response!
+ * 1. Dispatch OTP: Securely validate registered user existence, generate 6-digit OTP, and dispatch via Nodemailer / SMS.
+ * SECURITY: If user does not exist in PostgreSQL, rejects with HTTP 404 immediately without generating OTP or calling Nodemailer.
  */
 export const requestOtp = async (
   payload: SendOtpInput
-): Promise<{ destination: string; channel: "email" | "mobile" }> => {
+): Promise<{ destination: string; channel: "email" | "mobile"; recipientName?: string }> => {
   const isEmail = Boolean(payload.email || payload.type === "email");
   const destination = isEmail ? payload.email!.trim().toLowerCase() : payload.phone!.trim();
 
-  // Generate CSPRNG 6-digit OTP and store HMAC hash with 10-min expiry in DB & memory
+  // 1. Strict Pre-Login User Existence Validation in PostgreSQL
+  const user = isEmail
+    ? await prisma.user.findUnique({
+        where: { email: destination },
+        select: { id: true, fullName: true, email: true, phone: true, isActive: true },
+      })
+    : await prisma.user.findUnique({
+        where: { phone: destination },
+        select: { id: true, fullName: true, email: true, phone: true, isActive: true },
+      });
+
+  if (!user) {
+    throw new AppError(
+      404,
+      "Account not found. Please register your society or join as a resident first."
+    );
+  }
+
+  if (!user.isActive) {
+    throw new AppError(
+      403,
+      "Your account has been deactivated. Please contact society administration."
+    );
+  }
+
+  // 2. Generate CSPRNG 6-digit OTP and store HMAC hash with 10-min expiry in DB & memory
   const rawOtp = await otpService.createOtp(destination);
 
   if (isEmail) {
-    // Look up resident name if available
-    const existingUser = await prisma.user.findUnique({
-      where: { email: destination },
-      select: { fullName: true },
-    });
-
     // Dispatch branded OTP email via Nodemailer Gmail SMTP
-    await sendOtpEmail(destination, rawOtp, existingUser?.fullName || undefined);
+    await sendOtpEmail(destination, rawOtp, user.fullName || undefined);
 
-    console.info(`[AuthService] OTP generated and dispatched via email to ${destination}`);
-    return { destination, channel: "email" };
+    console.info(`[AuthService] OTP generated and dispatched via email to registered user ${destination}`);
+    return { destination, channel: "email", recipientName: user.fullName };
   } else {
-    // If SMS gateway is connected, dispatch here.
-    console.info(`[AuthService] OTP generated for mobile destination ${destination}`);
-    return { destination, channel: "mobile" };
+    // If SMS gateway is connected, dispatch here
+    console.info(`[AuthService] OTP generated for registered mobile destination ${destination}`);
+    return { destination, channel: "mobile", recipientName: user.fullName };
   }
 };
 
@@ -192,8 +231,8 @@ export const verifyOtpAndAuthenticate = async (
     throw new AppError(400, verification.reason || "Invalid verification code.");
   }
 
-  // 2. Locate or provision user in database
-  let user = isEmail
+  // 2. Locate registered user in database
+  const user = isEmail
     ? await prisma.user.findUnique({
         where: { email: destination },
         include: userMembershipInclude.unitMembers ? userMembershipInclude : undefined,
@@ -203,30 +242,11 @@ export const verifyOtpAndAuthenticate = async (
         include: userMembershipInclude.unitMembers ? userMembershipInclude : undefined,
       });
 
-  // If user does not exist yet (e.g. resident joining or registering society), create provisional resident account
   if (!user) {
-    const defaultPhone = isEmail
-      ? `+919${Math.floor(100000000 + Math.random() * 900000000)}`
-      : destination;
-
-    const defaultName = isEmail
-      ? destination
-          .split("@")[0]
-          .replace(/[._-]/g, " ")
-          .replace(/\b\w/g, (char) => char.toUpperCase())
-      : "Verified Resident";
-
-    user = await prisma.user.create({
-      data: {
-        phone: defaultPhone,
-        email: isEmail ? destination : null,
-        fullName: defaultName,
-        role: "RESIDENT",
-        isActive: true,
-      },
-      include: userMembershipInclude,
-    });
-    console.info(`[AuthService] Provisioned new verified resident user: ${user.id} (${destination})`);
+    throw new AppError(
+      404,
+      "Account not found. Please register your society or join as a resident first."
+    );
   }
 
   if (!user.isActive) {
@@ -265,7 +285,7 @@ export const loginUser = async (payload: LoginInput): Promise<AuthSuccessResult>
   }
 
   // Find user by email or phone
-  let user = targetEmail
+  const user = targetEmail
     ? await prisma.user.findUnique({
         where: { email: targetEmail },
         include: userMembershipInclude,
@@ -275,32 +295,10 @@ export const loginUser = async (payload: LoginInput): Promise<AuthSuccessResult>
         include: userMembershipInclude,
       });
 
-  // Auto-provision if unseeded resident logged in with valid OTP
-  if (!user && payload.otp) {
-    const defaultPhone = targetPhone || `+919${Math.floor(100000000 + Math.random() * 900000000)}`;
-    const defaultName = targetEmail
-      ? targetEmail
-          .split("@")[0]
-          .replace(/[._-]/g, " ")
-          .replace(/\b\w/g, (char) => char.toUpperCase())
-      : "Verified Resident";
-
-    user = await prisma.user.create({
-      data: {
-        phone: defaultPhone,
-        email: targetEmail || null,
-        fullName: defaultName,
-        role: "RESIDENT",
-        isActive: true,
-      },
-      include: userMembershipInclude,
-    });
-  }
-
   if (!user) {
     throw new AppError(
       404,
-      `User account not found with ${targetEmail ? "email" : "phone number"}: ${destination}`
+      "Account not found. Please register your society or join as a resident first."
     );
   }
 

@@ -381,6 +381,9 @@ export const registerSociety = async (
       },
       token,
     };
+  }, {
+    maxWait: 10000,
+    timeout: 20000,
   });
 };
 

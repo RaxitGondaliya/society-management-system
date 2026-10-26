@@ -79,32 +79,38 @@ export class OtpService {
       createdAt: now,
     });
 
-    // 2. Persist hash with expiration timestamp to database
-    try {
-      // Invalidate existing unused records for this destination
-      await prisma.otpVerification.updateMany({
-        where: {
-          destination: key,
-          isUsed: false,
-        },
-        data: {
-          isUsed: true,
-        },
-      });
+    // 2. Persist hash with expiration timestamp to database asynchronously
+    // In-memory cache guarantees immediate cryptographic lookup while DB writes in background
+    const persistDb = async () => {
+      try {
+        await prisma.otpVerification.updateMany({
+          where: {
+            destination: key,
+            isUsed: false,
+          },
+          data: {
+            isUsed: true,
+          },
+        });
 
-      // Insert fresh hashed OTP record
-      await prisma.otpVerification.create({
-        data: {
-          destination: key,
-          otpHash: hash,
-          expiresAt,
-          attempts: 0,
-          isUsed: false,
-        },
-      });
-    } catch (err: any) {
-      console.warn(`[OtpService] Database write warning (falling back to cache):`, err.message);
-    }
+        await prisma.otpVerification.create({
+          data: {
+            destination: key,
+            otpHash: hash,
+            expiresAt,
+            attempts: 0,
+            isUsed: false,
+          },
+        });
+      } catch (err: any) {
+        console.warn(`[OtpService] Async database write warning (in-memory cache remains active):`, err?.message || err);
+      }
+    };
+
+    // Fire non-blocking database persistence
+    persistDb().catch((err) => {
+      console.warn(`[OtpService] Background DB write notice:`, err?.message || err);
+    });
 
     return rawOtp;
   }

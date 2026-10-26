@@ -9,8 +9,19 @@ import {
 const router = Router();
 
 /**
+ * @route   POST /api/v1/societies
+ * @desc    Register society, create super admin, auto-generate layout, and return auth session token
+ * @access  Public
+ */
+router.post(
+  "/",
+  validate({ body: registerSocietySchema }),
+  societyController.registerSociety
+);
+
+/**
  * @route   POST /api/v1/societies/register
- * @desc    Register society, create super admin, and auto-generate layout
+ * @desc    Register society alias endpoint
  * @access  Public
  */
 router.post(

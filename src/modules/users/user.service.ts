@@ -1,5 +1,6 @@
 import { prisma } from "../../config/prisma";
 import { AppError } from "../../utils/apiResponse";
+import { generateToken } from "../../utils/jwt";
 import {
   JoinSocietyInput,
   ApprovalDecisionInput,
@@ -147,8 +148,19 @@ export const requestToJoinSociety = async (payload: JoinSocietyInput) => {
       });
     }
 
+    // Generate valid JWT auth token for the resident session
+    const token = generateToken({
+      id: user.id,
+      phone: user.phone,
+      email: user.email,
+      role: user.role, // 'RESIDENT'
+      societyId: society.id,
+      unitId: unit.id,
+    });
+
     return {
-      message: "Join request submitted successfully. Awaiting admin approval.",
+      token,
+      message: "Registration completed successfully.",
       requestId: membership.id,
       status: membership.approvalStatus,
       memberType: membership.memberType,
@@ -164,12 +176,17 @@ export const requestToJoinSociety = async (payload: JoinSocietyInput) => {
       },
       user: {
         id: user.id,
+        name: user.fullName,
         fullName: user.fullName,
         phone: user.phone,
         email: user.email,
+        role: user.role,
       },
       submittedAt: membership.createdAt,
     };
+  }, {
+    maxWait: 10000,
+    timeout: 20000,
   });
 };
 

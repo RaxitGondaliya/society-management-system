@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import { errorResponse } from "../utils/apiResponse";
 import { verifyToken } from "../utils/jwt";
 import { prisma } from "../config/prisma";
+import { isSessionRevoked } from "../modules/auth/auth.service";
 
 export const authenticateToken = async (
   req: Request,
@@ -18,6 +19,12 @@ export const authenticateToken = async (
     const token = authHeader.split(" ")[1];
     if (!token) {
       errorResponse(res, "Authorization token is missing", 401);
+      return;
+    }
+
+    // Check if token was explicitly logged out / revoked
+    if (isSessionRevoked(token)) {
+      errorResponse(res, "Session has been invalidated. Please log in again.", 401);
       return;
     }
 

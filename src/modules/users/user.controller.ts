@@ -19,7 +19,27 @@ export const joinSociety = async (
 ): Promise<void> => {
   try {
     const result = await userService.requestToJoinSociety(req.body);
-    successResponse(res, result.message, result, 201);
+    res.status(201).json({
+      success: true,
+      message: "Registration completed successfully.",
+      data: {
+        token: result.token,
+        user: {
+          id: result.user.id,
+          name: result.user.name,
+          fullName: result.user.fullName,
+          email: result.user.email,
+          phone: result.user.phone,
+          role: result.user.role, // 'RESIDENT'
+        },
+        requestId: result.requestId,
+        status: result.status,
+        memberType: result.memberType,
+        society: result.society,
+        unit: result.unit,
+        submittedAt: result.submittedAt,
+      },
+    });
   } catch (error) {
     next(error);
   }
