@@ -24,11 +24,11 @@ export const sendOtp = async (
   if (res.headersSent) return;
 
   try {
-    // 18-second ceiling timeout ensuring compatibility with Nodemailer 15s connection limits
+    // 25-second ceiling timeout ensuring compatibility with Nodemailer 20s connection limits
     const timeoutPromise = new Promise<never>((_, reject) => {
       const timer = setTimeout(() => {
-        reject(new Error("Email dispatch timed out after 18000ms"));
-      }, 18000);
+        reject(new Error("Email dispatch timed out after 25000ms"));
+      }, 25000);
       if (typeof timer.unref === "function") timer.unref();
     });
 
