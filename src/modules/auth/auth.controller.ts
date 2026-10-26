@@ -24,11 +24,11 @@ export const sendOtp = async (
   if (res.headersSent) return;
 
   try {
-    // Fail-safe ceiling timeout to guarantee explicit response under 5 seconds
+    // 12-second ceiling timeout ensuring compatibility with Nodemailer 10s connection limits
     const timeoutPromise = new Promise<never>((_, reject) => {
       const timer = setTimeout(() => {
-        reject(new Error("OTP generation and dispatch timed out (exceeded 4800ms limit)."));
-      }, 4800);
+        reject(new Error("Email dispatch timed out after 12000ms"));
+      }, 12000);
       if (typeof timer.unref === "function") timer.unref();
     });
 
@@ -49,22 +49,22 @@ export const sendOtp = async (
       });
     }
   } catch (error: any) {
-    console.error("[AuthController] Failed to dispatch OTP:", error?.message || error);
+    console.error("[Email Dispatch Failed]:", error?.message || error);
 
     if (!res.headersSent) {
-      // Respect operational application errors (e.g., 404 User Not Found, 403 Deactivated)
-      if (error instanceof AppError || error?.statusCode) {
-        const statusCode = error.statusCode || 400;
-        res.status(statusCode).json({
+      // Respect operational user state errors (404 Account Not Found, 403 Account Deactivated)
+      if (error instanceof AppError && (error.statusCode === 404 || error.statusCode === 403)) {
+        res.status(error.statusCode).json({
           success: false,
           message: error.message,
         });
         return;
       }
 
+      // Explicit SMTP delivery failure - strictly avoid fake 200 OK
       res.status(500).json({
         success: false,
-        message: "Failed to dispatch email. Please verify SMTP settings.",
+        message: "Failed to deliver verification email. Please check server SMTP configuration.",
       });
     }
   }

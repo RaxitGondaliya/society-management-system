@@ -220,10 +220,10 @@ export const requestOtp = async (
   const rawOtp = await otpService.createOtp(destination);
 
   if (isEmail) {
-    // Dispatch branded OTP email via Nodemailer Gmail SMTP
+    // Dispatch real OTP email via Nodemailer Gmail SMTP
+    console.log("[Email Dispatch] Attempting to send OTP to:", user.email || destination);
     await sendOtpEmail(destination, rawOtp, user.fullName || undefined);
 
-    console.info(`[AuthService] OTP generated and dispatched via email to registered user ${destination}`);
     return { destination, channel: "email", recipientName: user.fullName };
   } else {
     // If SMS gateway is connected, dispatch here
