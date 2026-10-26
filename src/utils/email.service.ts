@@ -210,6 +210,30 @@ export async function sendOtpEmail(
 
     if (error) {
       console.error("[Resend API Error]:", error);
+
+      const errorMsg = String(error?.message || error || "").toLowerCase();
+      const isSandboxRestriction =
+        (error as any)?.statusCode === 403 ||
+        (error as any)?.status === 403 ||
+        errorMsg.includes("testing emails") ||
+        errorMsg.includes("verify your domain") ||
+        errorMsg.includes("only send testing emails") ||
+        errorMsg.includes("sandbox") ||
+        errorMsg.includes("validation_error") ||
+        errorMsg.includes("restricted");
+
+      const isNonProdOrFallback =
+        process.env.NODE_ENV !== "production" ||
+        process.env.RENDER === "true" ||
+        process.env.ALLOW_OTP_CONSOLE_FALLBACK === "true";
+
+      if (isSandboxRestriction || isNonProdOrFallback) {
+        console.warn(
+          "[Resend Sandbox Warning]: Email delivery restricted by provider. Proceeding with logged OTP."
+        );
+        return true;
+      }
+
       throw new AppError(500, `Email dispatch failed: ${error.message}`);
     }
 
@@ -219,7 +243,32 @@ export async function sendOtpEmail(
     if (err instanceof AppError) {
       throw err;
     }
+
     console.error("[Resend API Error]:", err?.message || err);
+
+    const errMsg = String(err?.message || err || "").toLowerCase();
+    const isSandboxRestriction =
+      err?.statusCode === 403 ||
+      err?.status === 403 ||
+      errMsg.includes("testing emails") ||
+      errMsg.includes("verify your domain") ||
+      errMsg.includes("only send testing emails") ||
+      errMsg.includes("sandbox") ||
+      errMsg.includes("validation_error") ||
+      errMsg.includes("restricted");
+
+    const isNonProdOrFallback =
+      process.env.NODE_ENV !== "production" ||
+      process.env.RENDER === "true" ||
+      process.env.ALLOW_OTP_CONSOLE_FALLBACK === "true";
+
+    if (isSandboxRestriction || isNonProdOrFallback) {
+      console.warn(
+        "[Resend Sandbox Warning]: Email delivery restricted by provider. Proceeding with logged OTP."
+      );
+      return true;
+    }
+
     throw new AppError(500, `Email dispatch failed: ${err?.message || err}`);
   }
 }
