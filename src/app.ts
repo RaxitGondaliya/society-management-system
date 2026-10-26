@@ -23,6 +23,9 @@ import emergencyRoutes from "./modules/emergency/emergency.routes";
 
 const app: Application = express();
 
+// Enable Express trust proxy for cloud deployment (e.g. Render, AWS behind reverse proxy)
+app.set("trust proxy", 1);
+
 // 1. Enterprise Security Headers (Helmet)
 app.use(helmet());
 

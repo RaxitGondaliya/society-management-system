@@ -26,9 +26,10 @@ export const getEmailTransporter = (): Transporter => {
   }
 
   const host = process.env.SMTP_HOST || "smtp.gmail.com";
-  const port = Number(process.env.SMTP_PORT) || 587;
-  // Port 587 uses STARTTLS (secure: false); Port 465 uses SSL (secure: true)
-  const secure = process.env.SMTP_SECURE === "true";
+  // Force port 465 by default to bypass Render outbound blocks on port 587
+  const port = Number(process.env.SMTP_PORT) || 465;
+  // Default to true (SSL on port 465); only false if explicitly set to 'false'
+  const secure = process.env.SMTP_SECURE === "false" ? false : true;
   const user = process.env.SMTP_USER;
   const pass = process.env.SMTP_PASS;
 
@@ -40,13 +41,14 @@ export const getEmailTransporter = (): Transporter => {
       user,
       pass,
     },
-    connectionTimeout: 10000,
-    greetingTimeout: 5000,
-    socketTimeout: 10000,
+    family: 4, // Force IPv4 to prevent IPv6 hanging on Render
+    connectionTimeout: 15000,
+    greetingTimeout: 10000,
+    socketTimeout: 15000,
     tls: {
       rejectUnauthorized: false,
     },
-  });
+  } as any);
 
   return transporterInstance;
 };
