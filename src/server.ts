@@ -3,7 +3,7 @@ dotenv.config();
 
 import app from "./app";
 import { prisma } from "./config/prisma";
-import { verifyTransporterConnection } from "./utils/email.service";
+
 
 const PORT = process.env.PORT || 10000;
 
@@ -24,10 +24,7 @@ async function bootstrap() {
     });
     console.log("✅ Successfully connected to PostgreSQL (society_db) via Prisma.");
 
-    // Diagnostic Check: Verify SMTP connection on startup (non-blocking, fails gracefully without crashing)
-    verifyTransporterConnection().catch((err) => {
-      console.warn("[Server Warning] SMTP verification check warning:", err?.message || err);
-    });
+
 
     const server = app.listen(PORT, () => {
       console.log(`🚀 SocietySphere Backend Server listening on http://localhost:${PORT}`);
