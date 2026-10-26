@@ -2,6 +2,13 @@ import { Request, Response, NextFunction } from "express";
 import { AppError, successResponse } from "../../utils/apiResponse";
 import * as authService from "./auth.service";
 import { LoginInput, SendOtpInput, VerifyOtpInput } from "./auth.validation";
+import { registerSociety } from "../societies/society.controller";
+
+/**
+ * Handle user/society registration
+ * POST /api/v1/auth/register
+ */
+export const register = registerSociety;
 
 /**
  * Dispatch verification OTP code

@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from "express";
-import { successResponse } from "../../utils/apiResponse";
+import { AppError, successResponse } from "../../utils/apiResponse";
 import * as societyService from "./society.service";
 import { RegisterSocietyInput } from "./society.validation";
 
@@ -13,12 +13,26 @@ export const registerSociety = async (
   res: Response,
   next: NextFunction
 ): Promise<void> => {
+  const payload: any = req.body || {};
+  const email = payload.email || payload.admin?.email;
+  const societyName = payload.name || payload.societyName;
+
+  console.log('[Register] Incoming payload:', { email, societyName: societyName || payload.name });
+  console.log('[Register] Attempting Prisma insert into Neon DB...');
+
   try {
     const result = await societyService.registerSociety(req.body);
+
+    console.log('[Register] Successfully committed to Neon DB with ID:', result.admin.id);
+
+    // Guaranteed response: returns only after row confirmation in Neon PostgreSQL
     res.status(201).json({
       success: true,
-      message: "Registration completed successfully.",
+      message: "Society and admin registered successfully in database.",
       data: {
+        userId: result.admin.id,
+        societyId: result.society.id,
+        email: result.admin.email,
         token: result.token,
         user: {
           id: result.admin.id,
@@ -34,7 +48,15 @@ export const registerSociety = async (
         layoutSummary: result.layoutSummary,
       },
     });
-  } catch (error) {
+  } catch (error: any) {
+    console.error('[DB WRITE ERROR]:', error?.message || error);
+    if (error instanceof AppError) {
+      res.status(error.statusCode).json({
+        success: false,
+        message: error.message,
+      });
+      return;
+    }
     next(error);
   }
 };

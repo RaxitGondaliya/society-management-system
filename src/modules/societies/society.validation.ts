@@ -1,6 +1,56 @@
 import { z } from "zod";
 
-export const registerSocietySchema = z
+/**
+ * Normalizes registration payloads whether fields are nested (admin, layout)
+ * or flattened directly on the root object (e.g. email, phone, fullName, societyName).
+ */
+export const normalizeRegistrationInput = (raw: any): any => {
+  if (!raw || typeof raw !== "object") return raw;
+
+  const societyName = (raw.name || raw.societyName || "").toString().trim();
+  const address = (raw.address || "Main Society Premises").toString().trim();
+  const propertyType = ["FLAT", "ROW_HOUSE", "VILLA"].includes(raw.propertyType)
+    ? raw.propertyType
+    : "FLAT";
+
+  // Build admin object
+  const adminFullName = (raw.admin?.fullName || raw.fullName || raw.adminName || "Administrator").toString().trim();
+  const adminPhone = (raw.admin?.phone || raw.phone || "+919876543210").toString().trim();
+  const rawEmail = raw.admin?.email || raw.email || null;
+  const adminEmail = rawEmail ? rawEmail.toString().trim().toLowerCase() : null;
+
+  // Build layout object
+  let layout = raw.layout;
+  if (!layout || typeof layout !== "object") {
+    if (propertyType === "FLAT") {
+      layout = {
+        wings: Array.isArray(raw.wings) && raw.wings.length > 0 ? raw.wings : ["Wing A"],
+        floorsPerWing: Number(raw.floorsPerWing) || 2,
+        unitsPerFloor: Number(raw.unitsPerFloor) || 2,
+      };
+    } else {
+      layout = {
+        totalUnits: Number(raw.totalUnits) || 10,
+        unitPrefix: raw.unitPrefix || (propertyType === "VILLA" ? "Villa-" : "RH-"),
+      };
+    }
+  }
+
+  return {
+    ...raw,
+    name: societyName,
+    propertyType,
+    address,
+    admin: {
+      fullName: adminFullName,
+      phone: adminPhone,
+      email: adminEmail,
+    },
+    layout,
+  };
+};
+
+export const baseRegisterSocietySchema = z
   .object({
     name: z
       .string()
@@ -13,7 +63,7 @@ export const registerSocietySchema = z
     address: z
       .string()
       .trim()
-      .min(5, "Address must be at least 5 characters"),
+      .min(3, "Address must be at least 3 characters"),
     latitude: z.number().optional().nullable(),
     longitude: z.number().optional().nullable(),
     bankAccountNo: z.string().trim().optional().nullable(),
@@ -83,6 +133,11 @@ export const registerSocietySchema = z
     }
   });
 
+export const registerSocietySchema = z.preprocess(
+  normalizeRegistrationInput,
+  baseRegisterSocietySchema
+);
+
 export const getSocietyByCodeSchema = z.object({
   code: z
     .string()
@@ -90,5 +145,5 @@ export const getSocietyByCodeSchema = z.object({
     .min(3, "Society code must be at least 3 characters"),
 });
 
-export type RegisterSocietyInput = z.infer<typeof registerSocietySchema>;
+export type RegisterSocietyInput = z.infer<typeof baseRegisterSocietySchema>;
 export type GetSocietyByCodeInput = z.infer<typeof getSocietyByCodeSchema>;

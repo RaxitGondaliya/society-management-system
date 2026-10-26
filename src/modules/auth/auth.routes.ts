@@ -3,6 +3,7 @@ import { validate } from "../../middleware/validate.middleware";
 import { authenticate } from "../../middleware/auth.middleware";
 import * as authController from "./auth.controller";
 import { loginSchema, sendOtpSchema, verifyOtpSchema } from "./auth.validation";
+import { registerSocietySchema } from "../societies/society.validation";
 
 const router = Router();
 
@@ -37,6 +38,17 @@ router.post(
   "/login",
   validate({ body: loginSchema }),
   authController.login
+);
+
+/**
+ * @route   POST /api/v1/auth/register
+ * @desc    Register society & admin user in Neon PostgreSQL
+ * @access  Public
+ */
+router.post(
+  "/register",
+  validate({ body: registerSocietySchema }),
+  authController.register
 );
 
 /**

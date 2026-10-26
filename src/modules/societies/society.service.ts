@@ -2,7 +2,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../../config/prisma";
 import { AppError } from "../../utils/apiResponse";
 import { generateToken } from "../../utils/jwt";
-import { RegisterSocietyInput } from "./society.validation";
+import { RegisterSocietyInput, normalizeRegistrationInput } from "./society.validation";
 
 /**
  * Format wing name cleanly (e.g., 'A' -> 'Wing A', 'Tower 1' -> 'Tower 1')
@@ -100,75 +100,82 @@ export interface SocietyRegistrationResult {
  * Register a new society and auto-generate layout inside an ACID-compliant transaction
  */
 export const registerSociety = async (
-  payload: RegisterSocietyInput
+  rawPayload: RegisterSocietyInput
 ): Promise<SocietyRegistrationResult> => {
-  return await prisma.$transaction(async (tx) => {
-    // 1. Validate Admin User Existence
-    let user = await tx.user.findUnique({
-      where: { phone: payload.admin.phone },
-    });
+  const payload = normalizeRegistrationInput(rawPayload);
 
-    if (user) {
-      if (!user.isActive) {
-        throw new AppError(
-          403,
-          "User account with this phone number is currently deactivated."
-        );
-      }
+  const email = payload.email || payload.admin?.email;
+  const societyName = payload.name || payload.societyName;
 
-      // Upgrade role to SUPER_ADMIN if not already
-      if (user.role !== "SUPER_ADMIN") {
-        user = await tx.user.update({
-          where: { id: user.id },
-          data: { role: "SUPER_ADMIN" },
-        });
-      }
-    } else {
-      // Check email uniqueness if email provided
-      if (payload.admin.email) {
-        const existingEmailUser = await tx.user.findUnique({
-          where: { email: payload.admin.email },
-        });
+  console.log("[Register] Incoming payload:", { email, societyName: societyName || payload.name });
+  console.log("[Register] Attempting Prisma insert into Neon DB...");
 
-        if (existingEmailUser) {
-          throw new AppError(
-            409,
-            `A user with email '${payload.admin.email}' already exists.`
-          );
-        }
-      }
+  const result = await prisma.$transaction(
+    async (tx) => {
+      // 1. Validate Admin User Existence
+      const adminPhone = payload.admin.phone.trim();
+      const adminEmail = payload.admin.email ? payload.admin.email.trim().toLowerCase() : null;
+      const adminFullName = payload.admin.fullName.trim();
 
-      // Create Admin User with SUPER_ADMIN role
-      user = await tx.user.create({
-        data: {
-          phone: payload.admin.phone,
-          email: payload.admin.email || null,
-          fullName: payload.admin.fullName,
-          role: "SUPER_ADMIN",
-          isActive: true,
+      let user = await tx.user.findFirst({
+        where: {
+          OR: [
+            { phone: adminPhone },
+            ...(adminEmail ? [{ email: adminEmail }] : []),
+          ],
         },
       });
-    }
 
-    // 2. Generate Unique Society Code
-    const societyCode = await generateUniqueSocietyCode(payload.name, tx);
+      if (user) {
+        if (!user.isActive) {
+          throw new AppError(
+            403,
+            "User account with this phone/email is currently deactivated."
+          );
+        }
 
-    // 3. Create Society Record
-    const society = await tx.society.create({
-      data: {
-        name: payload.name,
-        code: societyCode,
-        propertyType: payload.propertyType,
-        address: payload.address,
-        latitude: payload.latitude !== undefined && payload.latitude !== null ? new Prisma.Decimal(payload.latitude) : null,
-        longitude: payload.longitude !== undefined && payload.longitude !== null ? new Prisma.Decimal(payload.longitude) : null,
-        bankAccountNo: payload.bankAccountNo || null,
-        bankIfsc: payload.bankIfsc || null,
-        bankBeneficiaryName: payload.bankBeneficiaryName || null,
-        upiId: payload.upiId || null,
-        subscriptionPlan: "ACTIVE",
-      },
-    });
+        // Upgrade role to SUPER_ADMIN if not already
+        if (user.role !== "SUPER_ADMIN" || (adminEmail && !user.email)) {
+          user = await tx.user.update({
+            where: { id: user.id },
+            data: {
+              role: "SUPER_ADMIN",
+              ...(adminEmail && !user.email ? { email: adminEmail } : {}),
+            },
+          });
+        }
+      } else {
+        // Create Admin User with SUPER_ADMIN role in Neon DB
+        user = await tx.user.create({
+          data: {
+            phone: adminPhone,
+            email: adminEmail,
+            fullName: adminFullName,
+            role: "SUPER_ADMIN",
+            isActive: true,
+          },
+        });
+      }
+
+      // 2. Generate Unique Society Code
+      const societyCode = await generateUniqueSocietyCode(societyName, tx);
+
+      // 3. Create Society Record in Neon DB
+      const society = await tx.society.create({
+        data: {
+          name: societyName,
+          code: societyCode,
+          propertyType: payload.propertyType,
+          address: payload.address,
+          latitude: payload.latitude !== undefined && payload.latitude !== null ? new Prisma.Decimal(payload.latitude) : null,
+          longitude: payload.longitude !== undefined && payload.longitude !== null ? new Prisma.Decimal(payload.longitude) : null,
+          bankAccountNo: payload.bankAccountNo || null,
+          bankIfsc: payload.bankIfsc || null,
+          bankBeneficiaryName: payload.bankBeneficiaryName || null,
+          upiId: payload.upiId || null,
+          subscriptionPlan: "ACTIVE",
+        },
+      });
 
     // 4. Batch-create SectionWings and Units based on Property Layout
     const createdSections: Array<{ id: string; name: string; unitCount: number }> = [];
@@ -383,8 +390,11 @@ export const registerSociety = async (
     };
   }, {
     maxWait: 10000,
-    timeout: 20000,
+    timeout: 25000,
   });
+
+  console.log('[Register] Successfully committed to Neon DB with ID:', result.admin.id);
+  return result;
 };
 
 /**
