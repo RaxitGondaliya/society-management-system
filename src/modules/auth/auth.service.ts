@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "../../config/prisma";
 import { AppError } from "../../utils/apiResponse";
 import { generateToken } from "../../utils/jwt";
@@ -173,17 +174,32 @@ export const requestOtp = async (
   payload: SendOtpInput
 ): Promise<{ destination: string; channel: "email" | "mobile"; recipientName?: string }> => {
   const isEmail = Boolean(payload.email || payload.type === "email");
-  const destination = isEmail ? payload.email!.trim().toLowerCase() : payload.phone!.trim();
+  const normalizedEmail = isEmail ? payload.email!.toLowerCase().trim() : null;
+  const rawPhone = !isEmail ? (payload.phone || "").trim().replace(/\s+/g, "") : null;
+  const normalizedPhone = rawPhone ? (rawPhone.startsWith("+") ? rawPhone : `+91${rawPhone}`) : null;
+  const destination = isEmail ? normalizedEmail! : normalizedPhone!;
 
   // 1. Strict Pre-Login User Existence Validation in PostgreSQL
+  // Normalize lookup email: email.toLowerCase().trim() and query Prisma using mode: 'insensitive'
   const user = isEmail
-    ? await prisma.user.findUnique({
-        where: { email: destination },
-        select: { id: true, fullName: true, email: true, phone: true, isActive: true },
+    ? await prisma.user.findFirst({
+        where: {
+          email: {
+            equals: normalizedEmail!,
+            mode: Prisma.QueryMode.insensitive,
+          },
+        },
+        select: { id: true, fullName: true, email: true, phone: true, isActive: true, role: true },
       })
-    : await prisma.user.findUnique({
-        where: { phone: destination },
-        select: { id: true, fullName: true, email: true, phone: true, isActive: true },
+    : await prisma.user.findFirst({
+        where: {
+          OR: [
+            { phone: normalizedPhone! },
+            { phone: rawPhone! },
+            ...(normalizedPhone!.startsWith("+91") ? [{ phone: normalizedPhone!.replace(/^\+91/, "") }] : []),
+          ],
+        },
+        select: { id: true, fullName: true, email: true, phone: true, isActive: true, role: true },
       });
 
   if (!user) {
@@ -223,7 +239,10 @@ export const verifyOtpAndAuthenticate = async (
   payload: VerifyOtpInput
 ): Promise<AuthSuccessResult> => {
   const isEmail = Boolean(payload.email || payload.type === "email");
-  const destination = isEmail ? payload.email!.trim().toLowerCase() : payload.phone!.trim();
+  const normalizedEmail = isEmail ? payload.email!.toLowerCase().trim() : null;
+  const rawPhone = !isEmail ? (payload.phone || "").trim().replace(/\s+/g, "") : null;
+  const normalizedPhone = rawPhone ? (rawPhone.startsWith("+") ? rawPhone : `+91${rawPhone}`) : null;
+  const destination = isEmail ? normalizedEmail! : normalizedPhone!;
 
   // 1. Verify candidate OTP against secure cryptographic store
   const verification = await otpService.verifyOtp(destination, payload.otp);
@@ -231,14 +250,25 @@ export const verifyOtpAndAuthenticate = async (
     throw new AppError(400, verification.reason || "Invalid verification code.");
   }
 
-  // 2. Locate registered user in database
+  // 2. Locate registered user in database with case-insensitive email lookup
   const user = isEmail
-    ? await prisma.user.findUnique({
-        where: { email: destination },
+    ? await prisma.user.findFirst({
+        where: {
+          email: {
+            equals: normalizedEmail!,
+            mode: Prisma.QueryMode.insensitive,
+          },
+        },
         include: userMembershipInclude.unitMembers ? userMembershipInclude : undefined,
       })
-    : await prisma.user.findUnique({
-        where: { phone: destination },
+    : await prisma.user.findFirst({
+        where: {
+          OR: [
+            { phone: normalizedPhone! },
+            { phone: rawPhone! },
+            ...(normalizedPhone!.startsWith("+91") ? [{ phone: normalizedPhone!.replace(/^\+91/, "") }] : []),
+          ],
+        },
         include: userMembershipInclude.unitMembers ? userMembershipInclude : undefined,
       });
 
@@ -263,8 +293,8 @@ export const verifyOtpAndAuthenticate = async (
  * 3. Handle Unified Login (Email/Phone + OTP or Password)
  */
 export const loginUser = async (payload: LoginInput): Promise<AuthSuccessResult> => {
-  const targetEmail = payload.email?.trim().toLowerCase();
-  const rawTargetPhone = payload.phone?.trim() || payload.identifier?.trim();
+  const targetEmail = payload.email?.toLowerCase().trim();
+  const rawTargetPhone = payload.phone?.trim().replace(/\s+/g, "") || payload.identifier?.trim().replace(/\s+/g, "");
   const targetPhone = rawTargetPhone
     ? rawTargetPhone.startsWith("+")
       ? rawTargetPhone
@@ -284,14 +314,25 @@ export const loginUser = async (payload: LoginInput): Promise<AuthSuccessResult>
     }
   }
 
-  // Find user by email or phone
+  // Find user by email (mode: 'insensitive') or phone
   const user = targetEmail
-    ? await prisma.user.findUnique({
-        where: { email: targetEmail },
+    ? await prisma.user.findFirst({
+        where: {
+          email: {
+            equals: targetEmail,
+            mode: Prisma.QueryMode.insensitive,
+          },
+        },
         include: userMembershipInclude,
       })
-    : await prisma.user.findUnique({
-        where: { phone: targetPhone! },
+    : await prisma.user.findFirst({
+        where: {
+          OR: [
+            { phone: targetPhone! },
+            { phone: rawTargetPhone! },
+            ...(targetPhone!.startsWith("+91") ? [{ phone: targetPhone!.replace(/^\+91/, "") }] : []),
+          ],
+        },
         include: userMembershipInclude,
       });
 

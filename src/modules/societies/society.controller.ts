@@ -49,15 +49,12 @@ export const registerSociety = async (
       },
     });
   } catch (error: any) {
-    console.error('[DB WRITE ERROR]:', error?.message || error);
-    if (error instanceof AppError) {
-      res.status(error.statusCode).json({
-        success: false,
-        message: error.message,
-      });
-      return;
-    }
-    next(error);
+    console.error('[REGISTRATION_DB_ERROR]:', error);
+    const statusCode = error instanceof AppError ? error.statusCode : 500;
+    res.status(statusCode).json({
+      success: false,
+      message: error.message || 'Database transaction failed',
+    });
   }
 };
 

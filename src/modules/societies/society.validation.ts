@@ -8,16 +8,17 @@ export const normalizeRegistrationInput = (raw: any): any => {
   if (!raw || typeof raw !== "object") return raw;
 
   const societyName = (raw.name || raw.societyName || "").toString().trim();
-  const address = (raw.address || "Main Society Premises").toString().trim();
+  const address = (raw.address || `${societyName || "Main"} Society Premises`).toString().trim();
   const propertyType = ["FLAT", "ROW_HOUSE", "VILLA"].includes(raw.propertyType)
     ? raw.propertyType
     : "FLAT";
 
-  // Build admin object
+  // Build admin object with normalized phone and email
   const adminFullName = (raw.admin?.fullName || raw.fullName || raw.adminName || "Administrator").toString().trim();
-  const adminPhone = (raw.admin?.phone || raw.phone || "+919876543210").toString().trim();
-  const rawEmail = raw.admin?.email || raw.email || null;
-  const adminEmail = rawEmail ? rawEmail.toString().trim().toLowerCase() : null;
+  const rawPhone = (raw.admin?.phone || raw.phone || "+919876543210").toString().trim().replace(/\s+/g, "");
+  const adminPhone = rawPhone.startsWith("+") ? rawPhone : `+91${rawPhone}`;
+  const rawEmail = (raw.admin?.email || raw.email || "").toString().trim().toLowerCase();
+  const adminEmail = rawEmail.length > 0 ? rawEmail : null;
 
   // Build layout object
   let layout = raw.layout;
@@ -32,8 +33,20 @@ export const normalizeRegistrationInput = (raw: any): any => {
       layout = {
         totalUnits: Number(raw.totalUnits) || 10,
         unitPrefix: raw.unitPrefix || (propertyType === "VILLA" ? "Villa-" : "RH-"),
+        sections: Array.isArray(raw.sections) && raw.sections.length > 0 ? raw.sections : ["Main Section"],
       };
     }
+  } else if (propertyType === "VILLA" || propertyType === "ROW_HOUSE") {
+    const rawSections = Array.isArray(layout.sections) && layout.sections.length > 0
+      ? layout.sections
+      : (Array.isArray(layout.wings) && layout.wings.length > 0 ? layout.wings : ["Main Section"]);
+    const computedTotal = Number(layout.totalUnits) || (Number(layout.floorsPerWing || 1) * Number(layout.unitsPerFloor || 1) * rawSections.length) || 10;
+    layout = {
+      ...layout,
+      sections: rawSections,
+      totalUnits: computedTotal,
+      unitPrefix: layout.unitPrefix || (propertyType === "VILLA" ? "Villa-" : "RH-"),
+    };
   }
 
   return {
@@ -96,7 +109,8 @@ export const baseRegisterSocietySchema = z
         .trim()
         .email("Invalid email address format")
         .optional()
-        .nullable(),
+        .nullable()
+        .or(z.literal("")),
     }),
   })
   .superRefine((data, ctx) => {

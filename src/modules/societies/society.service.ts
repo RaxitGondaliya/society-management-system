@@ -112,17 +112,47 @@ export const registerSociety = async (
 
   const result = await prisma.$transaction(
     async (tx) => {
-      // 1. Validate Admin User Existence
-      const adminPhone = payload.admin.phone.trim();
+      // Step a: Normalize input
       const adminEmail = payload.admin.email ? payload.admin.email.trim().toLowerCase() : null;
+      const rawPhone = payload.admin.phone.trim().replace(/\s+/g, "");
+      const adminPhone = rawPhone.startsWith("+") ? rawPhone : `+91${rawPhone}`;
       const adminFullName = payload.admin.fullName.trim();
+      const plan = payload.subscriptionPlan || (rawPayload as any).plan || "ACTIVE";
+
+      // Step b: Create Society Record in Neon DB
+      const societyCode = await generateUniqueSocietyCode(societyName, tx);
+      const society = await tx.society.create({
+        data: {
+          name: societyName,
+          code: societyCode,
+          propertyType: payload.propertyType,
+          address: payload.address,
+          latitude: payload.latitude !== undefined && payload.latitude !== null ? new Prisma.Decimal(payload.latitude) : null,
+          longitude: payload.longitude !== undefined && payload.longitude !== null ? new Prisma.Decimal(payload.longitude) : null,
+          bankAccountNo: payload.bankAccountNo || null,
+          bankIfsc: payload.bankIfsc || null,
+          bankBeneficiaryName: payload.bankBeneficiaryName || null,
+          upiId: payload.upiId || null,
+          subscriptionPlan: plan,
+        },
+      });
+
+      // Step c: Create/Link User record with role SUPER_ADMIN, email, phone, name
+      const userOrConditions: Prisma.UserWhereInput[] = [
+        { phone: adminPhone },
+      ];
+      if (adminPhone.startsWith("+91")) {
+        userOrConditions.push({ phone: adminPhone.replace(/^\+91/, "") });
+      }
+      if (adminEmail) {
+        userOrConditions.push({
+          email: { equals: adminEmail, mode: Prisma.QueryMode.insensitive },
+        });
+      }
 
       let user = await tx.user.findFirst({
         where: {
-          OR: [
-            { phone: adminPhone },
-            ...(adminEmail ? [{ email: adminEmail }] : []),
-          ],
+          OR: userOrConditions,
         },
       });
 
@@ -134,16 +164,16 @@ export const registerSociety = async (
           );
         }
 
-        // Upgrade role to SUPER_ADMIN if not already
-        if (user.role !== "SUPER_ADMIN" || (adminEmail && !user.email)) {
-          user = await tx.user.update({
-            where: { id: user.id },
-            data: {
-              role: "SUPER_ADMIN",
-              ...(adminEmail && !user.email ? { email: adminEmail } : {}),
-            },
-          });
-        }
+        // Upgrade role to SUPER_ADMIN if not already and synchronize contact
+        user = await tx.user.update({
+          where: { id: user.id },
+          data: {
+            role: "SUPER_ADMIN",
+            fullName: adminFullName || user.fullName,
+            phone: adminPhone,
+            ...(adminEmail && !user.email ? { email: adminEmail } : {}),
+          },
+        });
       } else {
         // Create Admin User with SUPER_ADMIN role in Neon DB
         user = await tx.user.create({
@@ -157,27 +187,7 @@ export const registerSociety = async (
         });
       }
 
-      // 2. Generate Unique Society Code
-      const societyCode = await generateUniqueSocietyCode(societyName, tx);
-
-      // 3. Create Society Record in Neon DB
-      const society = await tx.society.create({
-        data: {
-          name: societyName,
-          code: societyCode,
-          propertyType: payload.propertyType,
-          address: payload.address,
-          latitude: payload.latitude !== undefined && payload.latitude !== null ? new Prisma.Decimal(payload.latitude) : null,
-          longitude: payload.longitude !== undefined && payload.longitude !== null ? new Prisma.Decimal(payload.longitude) : null,
-          bankAccountNo: payload.bankAccountNo || null,
-          bankIfsc: payload.bankIfsc || null,
-          bankBeneficiaryName: payload.bankBeneficiaryName || null,
-          upiId: payload.upiId || null,
-          subscriptionPlan: "ACTIVE",
-        },
-      });
-
-    // 4. Batch-create SectionWings and Units based on Property Layout
+      // Step d: Batch-create SectionWings and Units based on Property Layout
     const createdSections: Array<{ id: string; name: string; unitCount: number }> = [];
     let firstUnit: {
       id: string;
