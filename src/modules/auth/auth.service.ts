@@ -3,7 +3,11 @@ import { prisma, executeResilientPrismaQuery } from "../../config/prisma";
 import { AppError } from "../../utils/apiResponse";
 import { generateToken } from "../../utils/jwt";
 import { sendOtpEmail } from "../../utils/email.service";
-import { sendMobileOtp, sanitizeMobileNumber } from "../../utils/sms.service";
+import {
+  flushStdout,
+  sendMobileOtp,
+  sanitizeMobileNumber,
+} from "../../utils/sms.service";
 import { otpService } from "./otp.service";
 import {
   LoginInput,
@@ -270,19 +274,30 @@ export const requestOtp = async (
     );
   }
 
-  // 2. Generate CSPRNG 6-digit OTP and store HMAC hash with 10-min expiry in DB & memory
-  const rawOtp = await otpService.createOtp(destination);
+  // 2. Generate CSPRNG 6-digit OTP
+  const rawOtp = otpService.generateOtp();
 
   if (isEmail) {
+    await otpService.saveOtp(destination, rawOtp);
     // Dispatch real OTP email via Nodemailer / Resend
     console.log("[Email Dispatch] Attempting to send OTP to:", user.email || destination);
+    flushStdout();
     await sendOtpEmail(destination, rawOtp, user.fullName || undefined);
+    flushStdout();
 
     return { destination, channel: "email", recipientName: user.fullName };
   } else {
+    flushStdout();
+    console.log(`\n========================================\n[MOBILE OTP DISPATCH] Destination: ${cleanMobile || destination} | OTP: >>> ${rawOtp} <<<\n========================================\n`);
+    flushStdout();
+    await otpService.saveOtp(destination, rawOtp);
+    if (cleanMobile) {
+      await otpService.saveOtp(cleanMobile, rawOtp);
+    }
     // Dispatch SMS OTP via Fast2SMS Quick Route (route=q)
     console.info(`[AuthService] Attempting to send SMS OTP to registered mobile: ${destination}`);
     await sendMobileOtp(cleanMobile || destination, rawOtp);
+    flushStdout();
     return { destination, channel: "mobile", recipientName: user.fullName };
   }
 };
@@ -485,12 +500,18 @@ export const getCurrentUser = async (userId: string): Promise<AuthSuccessResult>
 /**
  * 5. Dispatch Registration Mobile OTP (POST /api/v1/auth/register-otp)
  * Ensures mobile number does NOT already exist in DB (returns 409 Conflict if registered).
- * Generates 6-digit OTP, caches/stores via otpService, and dispatches via Fast2SMS (route=q).
+ * Generates 6-digit OTP, logs prominent terminal fallback banner immediately,
+ * caches/stores via otpService, and dispatches via Fast2SMS (route=q).
  */
 export const requestRegistrationOtp = async (
   payload: RegisterOtpInput
 ): Promise<{ destination: string; cleanMobile: string; channel: "mobile" }> => {
-  const rawPhone = (payload.phone || payload.identifier || "").trim();
+  const rawPhone = (
+    payload.phone ||
+    payload.mobile ||
+    payload.identifier ||
+    ""
+  ).trim();
   const cleanMobile = sanitizeMobileNumber(rawPhone);
 
   if (!/^[6-9]\d{9}$/.test(cleanMobile)) {
@@ -500,29 +521,46 @@ export const requestRegistrationOtp = async (
   const normalizedPhone = `+91${cleanMobile}`;
 
   // Ensure mobile number does NOT already exist in database
-  const existingUser = await executeResilientPrismaQuery(() =>
-    prisma.user.findFirst({
-      where: {
-        OR: [
-          { phone: normalizedPhone },
-          { phone: cleanMobile },
-          ...(rawPhone ? [{ phone: rawPhone }] : []),
-        ],
-      },
-      select: { id: true, phone: true },
-    })
-  );
+  let existingUser: { id: string; phone: string } | null | undefined = null;
+  try {
+    existingUser = await executeResilientPrismaQuery(() =>
+      prisma.user.findFirst({
+        where: {
+          OR: [
+            { phone: normalizedPhone },
+            { phone: cleanMobile },
+            ...(rawPhone ? [{ phone: rawPhone }] : []),
+          ],
+        },
+        select: { id: true, phone: true },
+      })
+    );
+  } catch (dbErr: any) {
+    console.warn(
+      "[AuthService] Database lookup warning during register-otp (continuing with OTP generation):",
+      dbErr?.message || dbErr
+    );
+  }
 
   if (existingUser) {
     throw new AppError(409, "Mobile number already registered. Please login.");
   }
 
-  // Generate 6-digit OTP, store via otpService, and dispatch via Fast2SMS (route=q)
-  const rawOtp = await otpService.createOtp(normalizedPhone);
-  console.info(
-    `[AuthService] Registration OTP generated for new mobile number: ${normalizedPhone}`
-  );
-  await sendMobileOtp(cleanMobile, rawOtp);
+  // 1. Generate 6-digit registration OTP code
+  const otpCode = otpService.generateOtp();
+
+  // 2. Immediately print prominent fallback log banner BEFORE saving to DB or dispatching to Fast2SMS
+  flushStdout();
+  console.log(`\n========================================\n[REGISTRATION OTP DISPATCH] Destination: ${cleanMobile} | OTP: >>> ${otpCode} <<<\n========================================\n`);
+  flushStdout();
+
+  // 3. Store OTP in memory & DB under both +91 and 10-digit keys
+  await otpService.saveOtp(normalizedPhone, otpCode);
+  await otpService.saveOtp(cleanMobile, otpCode);
+
+  // 4. Await Fast2SMS Quick Route (route=q) dispatch and its internal fallback logging
+  await sendMobileOtp(cleanMobile, otpCode);
+  flushStdout();
 
   return {
     destination: normalizedPhone,
@@ -538,7 +576,12 @@ export const requestRegistrationOtp = async (
 export const verifyRegistrationOtp = async (
   payload: VerifyRegisterOtpInput
 ): Promise<{ verified: boolean; phone: string }> => {
-  const rawPhone = (payload.phone || payload.identifier || "").trim();
+  const rawPhone = (
+    payload.phone ||
+    payload.mobile ||
+    payload.identifier ||
+    ""
+  ).trim();
   const cleanMobile = sanitizeMobileNumber(rawPhone);
 
   if (!/^[6-9]\d{9}$/.test(cleanMobile)) {

@@ -132,14 +132,17 @@ export type LoginInput = z.infer<typeof loginSchema>;
 export const registerOtpSchema = z
   .object({
     phone: z.string().trim().optional(),
+    mobile: z.string().trim().optional(),
     identifier: z.string().trim().optional(),
   })
-  .refine((data) => Boolean(data.phone || data.identifier), {
+  .refine((data) => Boolean(data.phone || data.mobile || data.identifier), {
     message: "Mobile phone number is required",
   })
   .refine(
     (data) => {
-      const cleaned = sanitizeMobileNumber(data.phone || data.identifier || "");
+      const cleaned = sanitizeMobileNumber(
+        data.phone || data.mobile || data.identifier || ""
+      );
       return INDIAN_MOBILE_REGEX.test(cleaned);
     },
     {
@@ -156,6 +159,7 @@ export type RegisterOtpInput = z.infer<typeof registerOtpSchema>;
 export const verifyRegisterOtpSchema = z
   .object({
     phone: z.string().trim().optional(),
+    mobile: z.string().trim().optional(),
     identifier: z.string().trim().optional(),
     otp: z
       .string({
@@ -165,12 +169,14 @@ export const verifyRegisterOtpSchema = z
       .length(6, "Verification code must be exactly 6 digits")
       .regex(/^\d{6}$/, "Verification code must consist of 6 numeric digits"),
   })
-  .refine((data) => Boolean(data.phone || data.identifier), {
+  .refine((data) => Boolean(data.phone || data.mobile || data.identifier), {
     message: "Mobile phone number is required",
   })
   .refine(
     (data) => {
-      const cleaned = sanitizeMobileNumber(data.phone || data.identifier || "");
+      const cleaned = sanitizeMobileNumber(
+        data.phone || data.mobile || data.identifier || ""
+      );
       return INDIAN_MOBILE_REGEX.test(cleaned);
     },
     {

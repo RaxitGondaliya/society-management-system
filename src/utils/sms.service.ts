@@ -22,6 +22,26 @@ export const sanitizeMobileNumber = (mobileNumber: string): string => {
 };
 
 /**
+ * Ensure console.log output is flushed immediately to process.stdout
+ * so container log collectors (such as Render) capture OTP logs without buffering delays.
+ */
+export const flushStdout = (): void => {
+  try {
+    if (
+      process.stdout &&
+      typeof (process.stdout as any)._handle?.setBlocking === "function"
+    ) {
+      (process.stdout as any)._handle.setBlocking(true);
+    }
+    if (process.stdout && typeof process.stdout.write === "function") {
+      process.stdout.write("");
+    }
+  } catch {
+    // Ignore stdout handle errors in non-standard environments
+  }
+};
+
+/**
  * Send 6-digit OTP to Indian mobile number via Fast2SMS Quick Route (route = 'q')
  *
  * - Always prints formatted fallback OTP log to terminal for local development & testing.
@@ -34,6 +54,7 @@ export async function sendMobileOtp(
 ): Promise<boolean> {
   const cleanMobile = sanitizeMobileNumber(mobileNumber);
 
+  flushStdout();
   // Always log formatted fallback message to terminal
   console.log(
     "\n[FALLBACK OTP LOG] Destination:",
@@ -42,6 +63,7 @@ export async function sendMobileOtp(
     otpCode,
     "<<<\n"
   );
+  flushStdout();
 
   try {
     const apiKey = process.env.FAST2SMS_API_KEY;

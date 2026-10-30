@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { AppError, successResponse } from "../../utils/apiResponse";
-import { sanitizeMobileNumber } from "../../utils/sms.service";
+import { flushStdout, sanitizeMobileNumber } from "../../utils/sms.service";
 import * as authService from "./auth.service";
 import {
   LoginInput,
@@ -21,8 +21,27 @@ export const sendRegisterOtp = async (
   res: Response,
   next: NextFunction
 ): Promise<void> => {
+  const rawPhone = (
+    req.body?.phone ||
+    req.body?.mobile ||
+    req.body?.identifier ||
+    ""
+  ).trim();
+  const cleanMobile = sanitizeMobileNumber(rawPhone);
+
+  flushStdout();
+  console.log(
+    `[Register OTP Request] Incoming mobile registration request for: ${rawPhone}`
+  );
+  flushStdout();
+
   try {
-    await authService.requestRegistrationOtp(req.body);
+    await authService.requestRegistrationOtp({
+      ...req.body,
+      phone: cleanMobile,
+      mobile: cleanMobile,
+      identifier: rawPhone || cleanMobile,
+    });
     res.status(200).json({
       success: true,
       message: "Verification OTP sent to mobile.",

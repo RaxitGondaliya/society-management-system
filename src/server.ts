@@ -3,6 +3,10 @@ dotenv.config();
 
 import app from "./app";
 import { prisma } from "./config/prisma";
+import { flushStdout } from "./utils/sms.service";
+
+// Ensure stdout is unbuffered on Render / container environments
+flushStdout();
 
 
 const PORT = process.env.PORT || 10000;

@@ -57,15 +57,17 @@ export class OtpService {
   }
 
   /**
-   * Generate secure 6-digit numeric OTP and store its HMAC hash in database & cache
-   * @param destination Phone number or email
-   * @returns Raw 6-digit OTP string for one-time dispatch via email service
+   * Generate a cryptographically secure 6-digit numeric OTP string
    */
-  public async createOtp(destination: string): Promise<string> {
-    const key = this.normalizeKey(destination);
+  public generateOtp(): string {
+    return crypto.randomInt(100000, 1000000).toString();
+  }
 
-    // Cryptographically secure 6-digit random number between 100000 and 999999
-    const rawOtp = crypto.randomInt(100000, 1000000).toString();
+  /**
+   * Store the HMAC-SHA256 hash of a generated 6-digit OTP in memory cache and database
+   */
+  public async saveOtp(destination: string, rawOtp: string): Promise<void> {
+    const key = this.normalizeKey(destination);
     const hash = this.hashOtp(rawOtp);
     const now = Date.now();
     const expiresAt = new Date(now + this.TTL_MS);
@@ -124,7 +126,16 @@ export class OtpService {
       }
       console.warn(`[OtpService] Background DB write notice:`, err?.message || err);
     });
+  }
 
+  /**
+   * Generate secure 6-digit numeric OTP and store its HMAC hash in database & cache
+   * @param destination Phone number or email
+   * @returns Raw 6-digit OTP string for one-time dispatch via email/SMS service
+   */
+  public async createOtp(destination: string): Promise<string> {
+    const rawOtp = this.generateOtp();
+    await this.saveOtp(destination, rawOtp);
     return rawOtp;
   }
 
