@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { prisma } from "../../config/prisma";
+import { prisma, isPrismaConnectionClosedError } from "../../config/prisma";
 
 interface OtpRecord {
   hash: string;
@@ -103,12 +103,25 @@ export class OtpService {
           },
         });
       } catch (err: any) {
+        if (isPrismaConnectionClosedError(err)) {
+          console.error(
+            "[Prisma Connection Warning]: Database connection was temporarily closed, handling gracefully."
+          );
+          await prisma.$connect().catch(() => {});
+          return;
+        }
         console.warn(`[OtpService] Async database write warning (in-memory cache remains active):`, err?.message || err);
       }
     };
 
     // Fire non-blocking database persistence
     persistDb().catch((err) => {
+      if (isPrismaConnectionClosedError(err)) {
+        console.error(
+          "[Prisma Connection Warning]: Database connection was temporarily closed, handling gracefully."
+        );
+        return;
+      }
       console.warn(`[OtpService] Background DB write notice:`, err?.message || err);
     });
 
@@ -190,7 +203,14 @@ export class OtpService {
         };
       }
     } catch (err: any) {
-      console.warn(`[OtpService] Database query warning (falling back to cache):`, err.message);
+      if (isPrismaConnectionClosedError(err)) {
+        console.error(
+          "[Prisma Connection Warning]: Database connection was temporarily closed, handling gracefully."
+        );
+        await prisma.$connect().catch(() => {});
+      } else {
+        console.warn(`[OtpService] Database query warning (falling back to cache):`, err.message);
+      }
     }
 
     // 2. Cache Fallback (if DB is unreachable or during transitional state)

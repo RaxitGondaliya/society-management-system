@@ -31,19 +31,23 @@ async function bootstrap() {
       console.log(`📡 Health Check URL: http://localhost:${PORT}/api/health`);
     });
 
-    const shutdown = async (signal: string) => {
-      console.log(`\n🛑 Received ${signal}. Gracefully shutting down...`);
-      server.close(async () => {
-        try {
-          await prisma.$disconnect();
-        } catch {}
-        console.log("🔒 Prisma database connection closed.");
-        process.exit(0);
-      });
-    };
+    let isShuttingDown = false;
 
-    process.on("SIGINT", () => shutdown("SIGINT"));
-    process.on("SIGTERM", () => shutdown("SIGTERM"));
+    process.on("SIGTERM", async () => {
+      if (isShuttingDown) return;
+      isShuttingDown = true;
+      console.log("🛑 Received SIGTERM. Gracefully shutting down...");
+      await prisma.$disconnect();
+      process.exit(0);
+    });
+
+    process.on("SIGINT", async () => {
+      if (isShuttingDown) return;
+      isShuttingDown = true;
+      console.log("🛑 Received SIGINT. Gracefully shutting down...");
+      await prisma.$disconnect();
+      process.exit(0);
+    });
   } catch (error) {
     console.error("💥 Failed to start the server:", error);
     try {

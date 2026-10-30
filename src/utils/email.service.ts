@@ -11,6 +11,12 @@ export interface SendOtpEmailOptions {
   recipientName?: string;
 }
 
+export interface SendOtpEmailResult {
+  success: boolean;
+  delivered: boolean;
+  fallback: boolean;
+}
+
 /**
  * Resend API Client Instance (HTTPS Port 443)
  * Guarantees 100% instant inbox delivery without SMTP connection timeouts on Render.
@@ -157,7 +163,7 @@ export async function sendOtpEmail(
   toEmailOrOptions: string | SendOtpEmailOptions,
   otpCodeParam?: string,
   recipientName?: string
-): Promise<boolean> {
+): Promise<SendOtpEmailResult> {
   let to: string;
   let otpCode: string;
   let name: string | undefined;
@@ -176,10 +182,10 @@ export async function sendOtpEmail(
     throw new AppError(400, "Recipient email and OTP code are required for email dispatch.");
   }
 
-  const cleanEmail = to.trim().toLowerCase();
+  const email = to.trim().toLowerCase();
 
-  // Always output clear, prominent fallback logs in the server terminal (Render logs) BEFORE dispatch
-  console.log(`\n========================================\n[AuthService] Attempting to send Email OTP to: ${cleanEmail}\n[FALLBACK OTP LOG] Destination: ${cleanEmail} | OTP: >>> ${otpCode} <<<\n========================================\n`);
+  // 1. Always log the fallback OTP prominently BEFORE making the Resend API call
+  console.log(`\n========================================\n[AuthService] Attempting to send Email OTP to: ${email}\n[FALLBACK OTP LOG] Destination: ${email} | OTP: >>> ${otpCode} <<<\n========================================\n`);
 
   const fromAddress =
     process.env.EMAIL_FROM || "SocietySphere <onboarding@resend.dev>";
@@ -193,91 +199,29 @@ export async function sendOtpEmail(
     `If you did not request this OTP, please ignore this email. AURA staff will never ask for your verification code.`;
 
   const apiKey = process.env.RESEND_API_KEY;
-  const hasResendKey = Boolean(apiKey && apiKey !== "re_placeholder" && apiKey !== "re_your_api_key_here");
-  const hasSmtpCredentials = Boolean(
-    process.env.SMTP_USER &&
-      process.env.SMTP_PASS &&
-      process.env.SMTP_PASS !== "your_google_app_password"
-  );
+  const client = apiKey ? new Resend(apiKey) : resend;
+
+  const isResendSandboxError = (err: any): boolean => {
+    if (!err) return false;
+    const status = err?.statusCode || err?.status;
+    const nameStr = String(err?.name || "").toLowerCase();
+    const msgStr = String(err?.message || err || "").toLowerCase();
+    return (
+      status === 403 ||
+      nameStr === "validation_error" ||
+      msgStr.includes("validation_error") ||
+      msgStr.includes("only send testing emails") ||
+      msgStr.includes("testing emails") ||
+      msgStr.includes("verify a domain") ||
+      msgStr.includes("verify your domain") ||
+      msgStr.includes("rvg274@gmail.com")
+    );
+  };
 
   try {
-    if (hasResendKey) {
-      const client = new Resend(apiKey);
-      const { data, error } = await client.emails.send({
-        from: fromAddress,
-        to: cleanEmail,
-        reply_to: replyToAddress,
-        replyTo: replyToAddress,
-        subject: `${otpCode} is your AURA Verification Passcode`,
-        html: htmlContent,
-        text: textContent,
-      } as any);
-
-      if (error) {
-        if (hasSmtpCredentials) {
-          const transporter = nodemailer.createTransport({
-            host: process.env.SMTP_HOST || "smtp.gmail.com",
-            port: Number(process.env.SMTP_PORT) || 465,
-            secure: process.env.SMTP_SECURE !== "false",
-            auth: {
-              user: process.env.SMTP_USER,
-              pass: process.env.SMTP_PASS,
-            },
-            connectionTimeout: 10000,
-            greetingTimeout: 10000,
-            socketTimeout: 15000,
-          });
-
-          await transporter.sendMail({
-            from: process.env.SMTP_USER || fromAddress,
-            to: cleanEmail,
-            subject: `${otpCode} is your AURA Verification Passcode`,
-            html: htmlContent,
-            text: textContent,
-          });
-
-          console.log(`[Email Success]: OTP sent successfully to ${cleanEmail}`);
-          return true;
-        }
-
-        console.error("[Email Dispatch Error]:", error.message || error);
-        return true;
-      }
-
-      console.log(`[Email Success]: OTP sent successfully to ${cleanEmail}`, data?.id ? `(ID: ${data.id})` : "");
-      return true;
-    }
-
-    if (hasSmtpCredentials) {
-      const transporter = nodemailer.createTransport({
-        host: process.env.SMTP_HOST || "smtp.gmail.com",
-        port: Number(process.env.SMTP_PORT) || 465,
-        secure: process.env.SMTP_SECURE !== "false",
-        auth: {
-          user: process.env.SMTP_USER,
-          pass: process.env.SMTP_PASS,
-        },
-        connectionTimeout: 10000,
-        greetingTimeout: 10000,
-        socketTimeout: 15000,
-      });
-
-      await transporter.sendMail({
-        from: process.env.SMTP_USER || fromAddress,
-        to: cleanEmail,
-        subject: `${otpCode} is your AURA Verification Passcode`,
-        html: htmlContent,
-        text: textContent,
-      });
-
-      console.log(`[Email Success]: OTP sent successfully to ${cleanEmail}`);
-      return true;
-    }
-
-    // Attempt default Resend client if no explicit SMTP or Resend key is detected
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await client.emails.send({
       from: fromAddress,
-      to: cleanEmail,
+      to: email,
       reply_to: replyToAddress,
       replyTo: replyToAddress,
       subject: `${otpCode} is your AURA Verification Passcode`,
@@ -286,16 +230,29 @@ export async function sendOtpEmail(
     } as any);
 
     if (error) {
+      if (isResendSandboxError(error)) {
+        console.warn(
+          "[Resend Sandbox Notice]: Email sending restricted to sandbox owner (rvg274@gmail.com). Using terminal OTP for verification."
+        );
+        return { success: true, delivered: false, fallback: true };
+      }
+
       console.error("[Email Dispatch Error]:", error.message || error);
-      return true;
+      return { success: true, delivered: false, fallback: true };
     }
 
-    console.log(`[Email Success]: OTP sent successfully to ${cleanEmail}`, data?.id ? `(ID: ${data.id})` : "");
-    return true;
+    console.log(`[Email Success]: OTP sent successfully to ${email}`, data?.id ? `(ID: ${data.id})` : "");
+    return { success: true, delivered: true, fallback: false };
   } catch (error: any) {
-    console.error("[Email Dispatch Error]:", error.message || error);
-    // Do NOT crash or return 500 so frontend verification screen can still be tested with the logged OTP
-    return true;
+    if (isResendSandboxError(error)) {
+      console.warn(
+        "[Resend Sandbox Notice]: Email sending restricted to sandbox owner (rvg274@gmail.com). Using terminal OTP for verification."
+      );
+      return { success: true, delivered: false, fallback: true };
+    }
+
+    console.error("[Email Dispatch Error]:", error?.message || error);
+    return { success: true, delivered: false, fallback: true };
   }
 }
 
@@ -307,7 +264,7 @@ export class EmailService {
     toEmailOrOptions: string | SendOtpEmailOptions,
     otpCode?: string,
     recipientName?: string
-  ): Promise<boolean> {
+  ): Promise<SendOtpEmailResult> {
     return sendOtpEmail(toEmailOrOptions, otpCode, recipientName);
   }
 }

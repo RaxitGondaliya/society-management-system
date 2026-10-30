@@ -1,5 +1,5 @@
 import { Prisma } from "@prisma/client";
-import { prisma } from "../../config/prisma";
+import { prisma, executeResilientPrismaQuery } from "../../config/prisma";
 import { AppError } from "../../utils/apiResponse";
 import { generateToken } from "../../utils/jwt";
 import { sendOtpEmail } from "../../utils/email.service";
@@ -223,27 +223,29 @@ export const requestOtp = async (
 
   // 1. Strict Pre-Login User Existence Validation in PostgreSQL
   // Normalize lookup email: email.toLowerCase().trim() and query Prisma using mode: 'insensitive'
-  const user = isEmail
-    ? await prisma.user.findFirst({
-        where: {
-          email: {
-            equals: normalizedEmail!,
-            mode: Prisma.QueryMode.insensitive,
+  const user = await executeResilientPrismaQuery(() =>
+    isEmail
+      ? prisma.user.findFirst({
+          where: {
+            email: {
+              equals: normalizedEmail!,
+              mode: Prisma.QueryMode.insensitive,
+            },
           },
-        },
-        select: { id: true, fullName: true, email: true, phone: true, isActive: true, role: true },
-      })
-    : await prisma.user.findFirst({
-        where: {
-          OR: [
-            { phone: normalizedPhone! },
-            { phone: cleanMobile },
-            ...(rawPhone ? [{ phone: rawPhone }] : []),
-            ...(normalizedPhone!.startsWith("+91") ? [{ phone: normalizedPhone!.replace(/^\+91/, "") }] : []),
-          ],
-        },
-        select: { id: true, fullName: true, email: true, phone: true, isActive: true, role: true },
-      });
+          select: { id: true, fullName: true, email: true, phone: true, isActive: true, role: true },
+        })
+      : prisma.user.findFirst({
+          where: {
+            OR: [
+              { phone: normalizedPhone! },
+              { phone: cleanMobile },
+              ...(rawPhone ? [{ phone: rawPhone }] : []),
+              ...(normalizedPhone!.startsWith("+91") ? [{ phone: normalizedPhone!.replace(/^\+91/, "") }] : []),
+            ],
+          },
+          select: { id: true, fullName: true, email: true, phone: true, isActive: true, role: true },
+        })
+  );
 
   if (!user) {
     throw new AppError(
