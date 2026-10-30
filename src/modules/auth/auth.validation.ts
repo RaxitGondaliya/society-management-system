@@ -5,6 +5,7 @@ import { z } from "zod";
  */
 export const sendOtpSchema = z
   .object({
+    identifier: z.string().trim().optional(),
     email: z
       .string()
       .trim()
@@ -13,12 +14,12 @@ export const sendOtpSchema = z
     phone: z
       .string()
       .trim()
-      .regex(/^[0-9+]{10,15}$/, "Invalid phone number format. Must be 10-15 digits")
+      .regex(/^[0-9+\-\s]{10,15}$/, "Invalid phone number format. Must be 10-15 digits")
       .optional(),
     type: z.enum(["mobile", "email"]).optional(),
   })
-  .refine((data) => Boolean(data.email || data.phone), {
-    message: "Either email address or phone number is required to dispatch OTP",
+  .refine((data) => Boolean(data.identifier || data.email || data.phone), {
+    message: "Either identifier, email address, or phone number is required to dispatch OTP",
   });
 
 export type SendOtpInput = z.infer<typeof sendOtpSchema>;
@@ -28,6 +29,7 @@ export type SendOtpInput = z.infer<typeof sendOtpSchema>;
  */
 export const verifyOtpSchema = z
   .object({
+    identifier: z.string().trim().optional(),
     email: z
       .string()
       .trim()
@@ -36,7 +38,7 @@ export const verifyOtpSchema = z
     phone: z
       .string()
       .trim()
-      .regex(/^[0-9+]{10,15}$/, "Invalid phone number format. Must be 10-15 digits")
+      .regex(/^[0-9+\-\s]{10,15}$/, "Invalid phone number format. Must be 10-15 digits")
       .optional(),
     otp: z
       .string({
@@ -47,8 +49,8 @@ export const verifyOtpSchema = z
       .regex(/^[0-9]{6}$/, "Verification code must consist of 6 numeric digits"),
     type: z.enum(["mobile", "email"]).optional(),
   })
-  .refine((data) => Boolean(data.email || data.phone), {
-    message: "Either email address or phone number is required to verify OTP",
+  .refine((data) => Boolean(data.identifier || data.email || data.phone), {
+    message: "Either identifier, email address, or phone number is required to verify OTP",
   });
 
 export type VerifyOtpInput = z.infer<typeof verifyOtpSchema>;

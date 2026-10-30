@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { AppError, successResponse } from "../../utils/apiResponse";
+import { sanitizeMobileNumber } from "../../utils/sms.service";
 import * as authService from "./auth.service";
 import { LoginInput, SendOtpInput, VerifyOtpInput } from "./auth.validation";
 import { registerSociety } from "../societies/society.controller";
@@ -23,17 +24,46 @@ export const sendOtp = async (
 ): Promise<void> => {
   if (res.headersSent) return;
 
+  const rawIdentifier = (
+    req.body?.identifier ||
+    req.body?.phone ||
+    req.body?.email ||
+    ""
+  ).trim();
+  const cleanPhone = sanitizeMobileNumber(rawIdentifier);
+  const isTenDigitPhone =
+    /^[0-9]{10}$/.test(cleanPhone) && !rawIdentifier.includes("@");
+  const isMobile =
+    req.body?.type === "mobile" ||
+    (req.body?.type !== "email" &&
+      !req.body?.email &&
+      (isTenDigitPhone || Boolean(req.body?.phone)));
+
+  const normalizedPayload: SendOtpInput = isMobile
+    ? {
+        ...req.body,
+        identifier: rawIdentifier,
+        phone: cleanPhone,
+        type: "mobile",
+      }
+    : {
+        ...req.body,
+        identifier: rawIdentifier,
+        email: (req.body?.email || rawIdentifier).toLowerCase().trim(),
+        type: "email",
+      };
+
   try {
     // 25-second ceiling timeout ensuring compatibility with Nodemailer 20s connection limits
     const timeoutPromise = new Promise<never>((_, reject) => {
       const timer = setTimeout(() => {
-        reject(new Error("Email dispatch timed out after 25000ms"));
+        reject(new Error("OTP dispatch timed out after 25000ms"));
       }, 25000);
       if (typeof timer.unref === "function") timer.unref();
     });
 
     const result = await Promise.race([
-      authService.requestOtp(req.body),
+      authService.requestOtp(normalizedPayload),
       timeoutPromise,
     ]);
 
@@ -45,11 +75,11 @@ export const sendOtp = async (
     if (!res.headersSent) {
       res.status(200).json({
         success: true,
-        message: "Verification code dispatched to your registered email.",
+        message: successMsg,
       });
     }
   } catch (error: any) {
-    console.error("[Email Dispatch Failed]:", error?.message || error);
+    console.error("[OTP Dispatch Failed]:", error?.message || error);
 
     if (!res.headersSent) {
       // Respect operational user state errors (404 Account Not Found, 403 Account Deactivated)
@@ -61,9 +91,10 @@ export const sendOtp = async (
         return;
       }
 
-      // Check if error is related to sandbox or non-production fallback
+      // Check if error is related to sandbox, SMS fallback, or non-production fallback
       const errorMsg = String(error?.message || "").toLowerCase();
       const isSandboxOrDev =
+        isMobile ||
         process.env.NODE_ENV !== "production" ||
         process.env.RENDER === "true" ||
         errorMsg.includes("testing emails") ||
@@ -74,7 +105,9 @@ export const sendOtp = async (
       if (isSandboxOrDev) {
         res.status(200).json({
           success: true,
-          message: "Verification code dispatched to your registered email.",
+          message: isMobile
+            ? "Verification code dispatched to your registered mobile number."
+            : "Verification code dispatched to your registered email.",
         });
         return;
       }

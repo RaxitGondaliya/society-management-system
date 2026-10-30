@@ -3,6 +3,7 @@ import { prisma } from "../../config/prisma";
 import { AppError } from "../../utils/apiResponse";
 import { generateToken } from "../../utils/jwt";
 import { sendOtpEmail } from "../../utils/email.service";
+import { sendMobileOtp, sanitizeMobileNumber } from "../../utils/sms.service";
 import { otpService } from "./otp.service";
 import { LoginInput, SendOtpInput, VerifyOtpInput } from "./auth.validation";
 
@@ -167,17 +168,54 @@ const buildAuthResult = (user: any): AuthSuccessResult => {
 };
 
 /**
+ * Helper to resolve identifier and channel (email vs mobile)
+ */
+const resolveOtpTarget = (payload: {
+  identifier?: string;
+  email?: string;
+  phone?: string;
+  type?: "email" | "mobile";
+}) => {
+  const rawIdentifier = (payload.identifier || payload.phone || payload.email || "").trim();
+  const cleanMobile = sanitizeMobileNumber(rawIdentifier);
+  const isTenDigitPhone = /^[0-9]{10}$/.test(cleanMobile) && !rawIdentifier.includes("@");
+
+  const isMobile =
+    payload.type === "mobile" ||
+    (payload.type !== "email" && !payload.email && (isTenDigitPhone || Boolean(payload.phone)));
+
+  const isEmail = !isMobile;
+  const normalizedEmail = isEmail ? (payload.email || rawIdentifier).toLowerCase().trim() : null;
+  const rawPhone = isMobile ? (payload.phone || rawIdentifier).trim().replace(/\s+/g, "") : null;
+  const normalizedPhone = isMobile && cleanMobile ? `+91${cleanMobile}` : null;
+  const destination = isEmail ? normalizedEmail! : normalizedPhone!;
+
+  return {
+    isEmail,
+    isMobile,
+    normalizedEmail,
+    rawPhone,
+    cleanMobile,
+    normalizedPhone,
+    destination,
+  };
+};
+
+/**
  * 1. Dispatch OTP: Securely validate registered user existence, generate 6-digit OTP, and dispatch via Nodemailer / SMS.
  * SECURITY: If user does not exist in PostgreSQL, rejects with HTTP 404 immediately without generating OTP or calling Nodemailer.
  */
 export const requestOtp = async (
   payload: SendOtpInput
 ): Promise<{ destination: string; channel: "email" | "mobile"; recipientName?: string }> => {
-  const isEmail = Boolean(payload.email || payload.type === "email");
-  const normalizedEmail = isEmail ? payload.email!.toLowerCase().trim() : null;
-  const rawPhone = !isEmail ? (payload.phone || "").trim().replace(/\s+/g, "") : null;
-  const normalizedPhone = rawPhone ? (rawPhone.startsWith("+") ? rawPhone : `+91${rawPhone}`) : null;
-  const destination = isEmail ? normalizedEmail! : normalizedPhone!;
+  const {
+    isEmail,
+    normalizedEmail,
+    rawPhone,
+    cleanMobile,
+    normalizedPhone,
+    destination,
+  } = resolveOtpTarget(payload);
 
   // 1. Strict Pre-Login User Existence Validation in PostgreSQL
   // Normalize lookup email: email.toLowerCase().trim() and query Prisma using mode: 'insensitive'
@@ -195,7 +233,8 @@ export const requestOtp = async (
         where: {
           OR: [
             { phone: normalizedPhone! },
-            { phone: rawPhone! },
+            { phone: cleanMobile },
+            ...(rawPhone ? [{ phone: rawPhone }] : []),
             ...(normalizedPhone!.startsWith("+91") ? [{ phone: normalizedPhone!.replace(/^\+91/, "") }] : []),
           ],
         },
@@ -220,14 +259,15 @@ export const requestOtp = async (
   const rawOtp = await otpService.createOtp(destination);
 
   if (isEmail) {
-    // Dispatch real OTP email via Nodemailer Gmail SMTP
+    // Dispatch real OTP email via Nodemailer / Resend
     console.log("[Email Dispatch] Attempting to send OTP to:", user.email || destination);
     await sendOtpEmail(destination, rawOtp, user.fullName || undefined);
 
     return { destination, channel: "email", recipientName: user.fullName };
   } else {
-    // If SMS gateway is connected, dispatch here
-    console.info(`[AuthService] OTP generated for registered mobile destination ${destination}`);
+    // Dispatch SMS OTP via Fast2SMS Quick Route (route=q)
+    console.info(`[AuthService] Attempting to send SMS OTP to registered mobile: ${destination}`);
+    await sendMobileOtp(cleanMobile || destination, rawOtp);
     return { destination, channel: "mobile", recipientName: user.fullName };
   }
 };
@@ -238,14 +278,27 @@ export const requestOtp = async (
 export const verifyOtpAndAuthenticate = async (
   payload: VerifyOtpInput
 ): Promise<AuthSuccessResult> => {
-  const isEmail = Boolean(payload.email || payload.type === "email");
-  const normalizedEmail = isEmail ? payload.email!.toLowerCase().trim() : null;
-  const rawPhone = !isEmail ? (payload.phone || "").trim().replace(/\s+/g, "") : null;
-  const normalizedPhone = rawPhone ? (rawPhone.startsWith("+") ? rawPhone : `+91${rawPhone}`) : null;
-  const destination = isEmail ? normalizedEmail! : normalizedPhone!;
+  const {
+    isEmail,
+    normalizedEmail,
+    rawPhone,
+    cleanMobile,
+    normalizedPhone,
+    destination,
+  } = resolveOtpTarget(payload);
 
   // 1. Verify candidate OTP against secure cryptographic store
-  const verification = await otpService.verifyOtp(destination, payload.otp);
+  let verification = await otpService.verifyOtp(destination, payload.otp);
+  if (
+    !verification.valid &&
+    !isEmail &&
+    cleanMobile &&
+    cleanMobile !== destination &&
+    verification.reason?.includes("No active verification code")
+  ) {
+    verification = await otpService.verifyOtp(cleanMobile, payload.otp);
+  }
+
   if (!verification.valid) {
     throw new AppError(400, verification.reason || "Invalid verification code.");
   }
@@ -265,7 +318,8 @@ export const verifyOtpAndAuthenticate = async (
         where: {
           OR: [
             { phone: normalizedPhone! },
-            { phone: rawPhone! },
+            { phone: cleanMobile },
+            ...(rawPhone ? [{ phone: rawPhone }] : []),
             ...(normalizedPhone!.startsWith("+91") ? [{ phone: normalizedPhone!.replace(/^\+91/, "") }] : []),
           ],
         },
@@ -293,33 +347,43 @@ export const verifyOtpAndAuthenticate = async (
  * 3. Handle Unified Login (Email/Phone + OTP or Password)
  */
 export const loginUser = async (payload: LoginInput): Promise<AuthSuccessResult> => {
-  const targetEmail = payload.email?.toLowerCase().trim();
-  const rawTargetPhone = payload.phone?.trim().replace(/\s+/g, "") || payload.identifier?.trim().replace(/\s+/g, "");
-  const targetPhone = rawTargetPhone
-    ? rawTargetPhone.startsWith("+")
-      ? rawTargetPhone
-      : `+91${rawTargetPhone}`
-    : undefined;
+  const {
+    isEmail,
+    normalizedEmail: targetEmail,
+    rawPhone: rawTargetPhone,
+    cleanMobile,
+    normalizedPhone: targetPhone,
+    destination,
+  } = resolveOtpTarget(payload);
 
-  const destination = targetEmail || targetPhone;
   if (!destination) {
     throw new AppError(400, "Please provide a valid registered phone number or email address.");
   }
 
   // If OTP is provided, verify against OTP service
   if (payload.otp) {
-    const verification = await otpService.verifyOtp(destination, payload.otp);
+    let verification = await otpService.verifyOtp(destination, payload.otp);
+    if (
+      !verification.valid &&
+      !isEmail &&
+      cleanMobile &&
+      cleanMobile !== destination &&
+      verification.reason?.includes("No active verification code")
+    ) {
+      verification = await otpService.verifyOtp(cleanMobile, payload.otp);
+    }
+
     if (!verification.valid) {
       throw new AppError(400, verification.reason || "Invalid verification code.");
     }
   }
 
   // Find user by email (mode: 'insensitive') or phone
-  const user = targetEmail
+  const user = isEmail
     ? await prisma.user.findFirst({
         where: {
           email: {
-            equals: targetEmail,
+            equals: targetEmail!,
             mode: Prisma.QueryMode.insensitive,
           },
         },
@@ -329,7 +393,8 @@ export const loginUser = async (payload: LoginInput): Promise<AuthSuccessResult>
         where: {
           OR: [
             { phone: targetPhone! },
-            { phone: rawTargetPhone! },
+            { phone: cleanMobile },
+            ...(rawTargetPhone ? [{ phone: rawTargetPhone }] : []),
             ...(targetPhone!.startsWith("+91") ? [{ phone: targetPhone!.replace(/^\+91/, "") }] : []),
           ],
         },
