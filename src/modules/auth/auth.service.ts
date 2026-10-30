@@ -176,15 +176,19 @@ const resolveOtpTarget = (payload: {
   phone?: string;
   type?: "email" | "mobile";
 }) => {
-  const rawIdentifier = (payload.identifier || payload.phone || payload.email || "").trim();
+  const rawIdentifier = (payload.identifier || payload.email || payload.phone || "").trim();
   const cleanMobile = sanitizeMobileNumber(rawIdentifier);
   const isTenDigitPhone = /^[0-9]{10}$/.test(cleanMobile) && !rawIdentifier.includes("@");
 
-  const isMobile =
-    payload.type === "mobile" ||
-    (payload.type !== "email" && !payload.email && (isTenDigitPhone || Boolean(payload.phone)));
+  const isEmail =
+    payload.type === "email" ||
+    rawIdentifier.includes("@") ||
+    Boolean(payload.email);
 
-  const isEmail = !isMobile;
+  const isMobile =
+    !isEmail &&
+    (payload.type === "mobile" || isTenDigitPhone || Boolean(payload.phone));
+
   const normalizedEmail = isEmail ? (payload.email || rawIdentifier).toLowerCase().trim() : null;
   const rawPhone = isMobile ? (payload.phone || rawIdentifier).trim().replace(/\s+/g, "") : null;
   const normalizedPhone = isMobile && cleanMobile ? `+91${cleanMobile}` : null;
