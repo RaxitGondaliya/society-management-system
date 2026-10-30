@@ -2,14 +2,42 @@ import { Router } from "express";
 import { validate } from "../../middleware/validate.middleware";
 import { authenticate } from "../../middleware/auth.middleware";
 import * as authController from "./auth.controller";
-import { loginSchema, sendOtpSchema, verifyOtpSchema } from "./auth.validation";
-import { registerSocietySchema } from "../societies/society.validation";
+import {
+  loginSchema,
+  registerOtpSchema,
+  registerUserSchema,
+  sendOtpSchema,
+  verifyOtpSchema,
+  verifyRegisterOtpSchema,
+} from "./auth.validation";
 
 const router = Router();
 
 /**
+ * @route   POST /api/v1/auth/register-otp
+ * @desc    Generate 6-digit OTP and dispatch to unregistered mobile via Fast2SMS Quick Route (route=q)
+ * @access  Public
+ */
+router.post(
+  "/register-otp",
+  validate({ body: registerOtpSchema }),
+  authController.sendRegisterOtp
+);
+
+/**
+ * @route   POST /api/v1/auth/verify-register-otp
+ * @desc    Pre-verify 6-digit registration mobile OTP for inline form verification UX
+ * @access  Public
+ */
+router.post(
+  "/verify-register-otp",
+  validate({ body: verifyRegisterOtpSchema }),
+  authController.verifyRegisterOtp
+);
+
+/**
  * @route   POST /api/v1/auth/send-otp
- * @desc    Generate secure 6-digit OTP and dispatch via Nodemailer email (enforces registered user check)
+ * @desc    Generate secure 6-digit OTP and dispatch via Nodemailer/Fast2SMS (enforces registered user check)
  * @access  Public
  */
 router.post(
@@ -31,7 +59,7 @@ router.post(
 
 /**
  * @route   POST /api/v1/auth/login
- * @desc    Authenticate user by phone or email + OTP/password
+ * @desc    Authenticate user by phone or email + mandatory 6-digit OTP
  * @access  Public
  */
 router.post(
@@ -42,12 +70,12 @@ router.post(
 
 /**
  * @route   POST /api/v1/auth/register
- * @desc    Register society & admin user in Neon PostgreSQL
+ * @desc    Register user in PostgreSQL after unconditional mobile OTP verification (email optional)
  * @access  Public
  */
 router.post(
   "/register",
-  validate({ body: registerSocietySchema }),
+  validate({ body: registerUserSchema }),
   authController.register
 );
 

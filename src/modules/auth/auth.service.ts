@@ -5,15 +5,24 @@ import { generateToken } from "../../utils/jwt";
 import { sendOtpEmail } from "../../utils/email.service";
 import { sendMobileOtp, sanitizeMobileNumber } from "../../utils/sms.service";
 import { otpService } from "./otp.service";
-import { LoginInput, SendOtpInput, VerifyOtpInput } from "./auth.validation";
+import {
+  LoginInput,
+  SendOtpInput,
+  VerifyOtpInput,
+  RegisterOtpInput,
+  VerifyRegisterOtpInput,
+  RegisterUserInput,
+} from "./auth.validation";
 
 export interface SafeUserProfile {
   id: string;
   phone: string;
   email: string | null;
   fullName: string;
+  name?: string;
   role: string;
   isActive: boolean;
+  phoneVerified?: boolean;
   createdAt: Date;
 }
 
@@ -310,27 +319,29 @@ export const verifyOtpAndAuthenticate = async (
   }
 
   // 2. Locate registered user in database with case-insensitive email lookup
-  const user = isEmail
-    ? await prisma.user.findFirst({
-        where: {
-          email: {
-            equals: normalizedEmail!,
-            mode: Prisma.QueryMode.insensitive,
+  const user = await executeResilientPrismaQuery(() =>
+    isEmail
+      ? prisma.user.findFirst({
+          where: {
+            email: {
+              equals: normalizedEmail!,
+              mode: Prisma.QueryMode.insensitive,
+            },
           },
-        },
-        include: userMembershipInclude.unitMembers ? userMembershipInclude : undefined,
-      })
-    : await prisma.user.findFirst({
-        where: {
-          OR: [
-            { phone: normalizedPhone! },
-            { phone: cleanMobile },
-            ...(rawPhone ? [{ phone: rawPhone }] : []),
-            ...(normalizedPhone!.startsWith("+91") ? [{ phone: normalizedPhone!.replace(/^\+91/, "") }] : []),
-          ],
-        },
-        include: userMembershipInclude.unitMembers ? userMembershipInclude : undefined,
-      });
+          include: userMembershipInclude.unitMembers ? userMembershipInclude : undefined,
+        })
+      : prisma.user.findFirst({
+          where: {
+            OR: [
+              { phone: normalizedPhone! },
+              { phone: cleanMobile },
+              ...(rawPhone ? [{ phone: rawPhone }] : []),
+              ...(normalizedPhone!.startsWith("+91") ? [{ phone: normalizedPhone!.replace(/^\+91/, "") }] : []),
+            ],
+          },
+          include: userMembershipInclude.unitMembers ? userMembershipInclude : undefined,
+        })
+  );
 
   if (!user) {
     throw new AppError(
@@ -350,7 +361,7 @@ export const verifyOtpAndAuthenticate = async (
 };
 
 /**
- * 3. Handle Unified Login (Email/Phone + OTP or Password)
+ * 3. Handle Unified Login (Email/Phone + OTP)
  */
 export const loginUser = async (payload: LoginInput): Promise<AuthSuccessResult> => {
   const {
@@ -366,46 +377,46 @@ export const loginUser = async (payload: LoginInput): Promise<AuthSuccessResult>
     throw new AppError(400, "Please provide a valid registered phone number or email address.");
   }
 
-  // If OTP is provided, verify against OTP service
-  if (payload.otp) {
-    let verification = await otpService.verifyOtp(destination, payload.otp);
-    if (
-      !verification.valid &&
-      !isEmail &&
-      cleanMobile &&
-      cleanMobile !== destination &&
-      verification.reason?.includes("No active verification code")
-    ) {
-      verification = await otpService.verifyOtp(cleanMobile, payload.otp);
-    }
+  // Unconditionally enforce OTP verification before issuing JWT
+  let verification = await otpService.verifyOtp(destination, payload.otp);
+  if (
+    !verification.valid &&
+    !isEmail &&
+    cleanMobile &&
+    cleanMobile !== destination &&
+    verification.reason?.includes("No active verification code")
+  ) {
+    verification = await otpService.verifyOtp(cleanMobile, payload.otp);
+  }
 
-    if (!verification.valid) {
-      throw new AppError(400, verification.reason || "Invalid verification code.");
-    }
+  if (!verification.valid) {
+    throw new AppError(400, verification.reason || "Invalid verification code.");
   }
 
   // Find user by email (mode: 'insensitive') or phone
-  const user = isEmail
-    ? await prisma.user.findFirst({
-        where: {
-          email: {
-            equals: targetEmail!,
-            mode: Prisma.QueryMode.insensitive,
+  const user = await executeResilientPrismaQuery(() =>
+    isEmail
+      ? prisma.user.findFirst({
+          where: {
+            email: {
+              equals: targetEmail!,
+              mode: Prisma.QueryMode.insensitive,
+            },
           },
-        },
-        include: userMembershipInclude,
-      })
-    : await prisma.user.findFirst({
-        where: {
-          OR: [
-            { phone: targetPhone! },
-            { phone: cleanMobile },
-            ...(rawTargetPhone ? [{ phone: rawTargetPhone }] : []),
-            ...(targetPhone!.startsWith("+91") ? [{ phone: targetPhone!.replace(/^\+91/, "") }] : []),
-          ],
-        },
-        include: userMembershipInclude,
-      });
+          include: userMembershipInclude,
+        })
+      : prisma.user.findFirst({
+          where: {
+            OR: [
+              { phone: targetPhone! },
+              { phone: cleanMobile },
+              ...(rawTargetPhone ? [{ phone: rawTargetPhone }] : []),
+              ...(targetPhone!.startsWith("+91") ? [{ phone: targetPhone!.replace(/^\+91/, "") }] : []),
+            ],
+          },
+          include: userMembershipInclude,
+        })
+  );
 
   if (!user) {
     throw new AppError(
@@ -428,19 +439,21 @@ export const loginUser = async (payload: LoginInput): Promise<AuthSuccessResult>
  * 4. Fetch authenticated user's active profile and society associations
  */
 export const getCurrentUser = async (userId: string): Promise<AuthSuccessResult> => {
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: {
-      id: true,
-      phone: true,
-      email: true,
-      fullName: true,
-      role: true,
-      isActive: true,
-      createdAt: true,
-      unitMembers: userMembershipInclude.unitMembers,
-    },
-  });
+  const user = await executeResilientPrismaQuery(() =>
+    prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        phone: true,
+        email: true,
+        fullName: true,
+        role: true,
+        isActive: true,
+        createdAt: true,
+        unitMembers: userMembershipInclude.unitMembers,
+      },
+    })
+  );
 
   if (!user) {
     throw new AppError(404, "User profile not found.");
@@ -466,5 +479,230 @@ export const getCurrentUser = async (userId: string): Promise<AuthSuccessResult>
     primarySocietyId,
     primaryUnitId,
     memberships: formatMemberships(user.unitMembers || []),
+  };
+};
+
+/**
+ * 5. Dispatch Registration Mobile OTP (POST /api/v1/auth/register-otp)
+ * Ensures mobile number does NOT already exist in DB (returns 409 Conflict if registered).
+ * Generates 6-digit OTP, caches/stores via otpService, and dispatches via Fast2SMS (route=q).
+ */
+export const requestRegistrationOtp = async (
+  payload: RegisterOtpInput
+): Promise<{ destination: string; cleanMobile: string; channel: "mobile" }> => {
+  const rawPhone = (payload.phone || payload.identifier || "").trim();
+  const cleanMobile = sanitizeMobileNumber(rawPhone);
+
+  if (!/^[6-9]\d{9}$/.test(cleanMobile)) {
+    throw new AppError(400, "Please provide a valid 10-digit Indian mobile number.");
+  }
+
+  const normalizedPhone = `+91${cleanMobile}`;
+
+  // Ensure mobile number does NOT already exist in database
+  const existingUser = await executeResilientPrismaQuery(() =>
+    prisma.user.findFirst({
+      where: {
+        OR: [
+          { phone: normalizedPhone },
+          { phone: cleanMobile },
+          ...(rawPhone ? [{ phone: rawPhone }] : []),
+        ],
+      },
+      select: { id: true, phone: true },
+    })
+  );
+
+  if (existingUser) {
+    throw new AppError(409, "Mobile number already registered. Please login.");
+  }
+
+  // Generate 6-digit OTP, store via otpService, and dispatch via Fast2SMS (route=q)
+  const rawOtp = await otpService.createOtp(normalizedPhone);
+  console.info(
+    `[AuthService] Registration OTP generated for new mobile number: ${normalizedPhone}`
+  );
+  await sendMobileOtp(cleanMobile, rawOtp);
+
+  return {
+    destination: normalizedPhone,
+    cleanMobile,
+    channel: "mobile",
+  };
+};
+
+/**
+ * 6. Pre-verify Registration Mobile OTP inline (POST /api/v1/auth/verify-register-otp)
+ * Verifies the 6-digit OTP without consuming it yet so final registration submission can consume it.
+ */
+export const verifyRegistrationOtp = async (
+  payload: VerifyRegisterOtpInput
+): Promise<{ verified: boolean; phone: string }> => {
+  const rawPhone = (payload.phone || payload.identifier || "").trim();
+  const cleanMobile = sanitizeMobileNumber(rawPhone);
+
+  if (!/^[6-9]\d{9}$/.test(cleanMobile)) {
+    throw new AppError(400, "Please provide a valid 10-digit Indian mobile number.");
+  }
+
+  const normalizedPhone = `+91${cleanMobile}`;
+
+  let verification = await otpService.verifyOtp(normalizedPhone, payload.otp, {
+    consume: false,
+  });
+  if (
+    !verification.valid &&
+    verification.reason?.includes("No active verification code")
+  ) {
+    verification = await otpService.verifyOtp(cleanMobile, payload.otp, {
+      consume: false,
+    });
+  }
+
+  if (!verification.valid) {
+    throw new AppError(
+      400,
+      verification.reason || "Invalid or expired verification code."
+    );
+  }
+
+  return {
+    verified: true,
+    phone: normalizedPhone,
+  };
+};
+
+/**
+ * 7. Complete User Registration with Verified Mobile OTP (POST /api/v1/auth/register)
+ * - Unconditionally verifies 6-digit mobile OTP via otpService.verifyOtp
+ * - Email is optional and requires NO OTP verification
+ * - Creates user in PostgreSQL, issues JWT token, and returns user profile + token
+ */
+export const registerUserWithOtp = async (
+  payload: RegisterUserInput
+): Promise<AuthSuccessResult> => {
+  const resolvedName = (
+    payload.name ||
+    payload.fullName ||
+    payload.admin?.fullName ||
+    ""
+  ).trim();
+  const rawPhone = (payload.phone || payload.admin?.phone || "").trim();
+  const cleanMobile = sanitizeMobileNumber(rawPhone);
+
+  if (!/^[6-9]\d{9}$/.test(cleanMobile)) {
+    throw new AppError(400, "Please provide a valid 10-digit Indian mobile number.");
+  }
+
+  const normalizedPhone = `+91${cleanMobile}`;
+  const rawEmail = (payload.email ?? payload.admin?.email ?? "").toString().trim().toLowerCase();
+  const normalizedEmail = rawEmail.length > 0 ? rawEmail : null;
+  const resolvedRole = payload.role || "RESIDENT";
+
+  // 1. Unconditionally verify mobile OTP with otpService.verifyOtp (consumes OTP)
+  let verification = await otpService.verifyOtp(normalizedPhone, payload.otp, {
+    consume: true,
+  });
+  if (
+    !verification.valid &&
+    verification.reason?.includes("No active verification code")
+  ) {
+    verification = await otpService.verifyOtp(cleanMobile, payload.otp, {
+      consume: true,
+    });
+  }
+
+  if (!verification.valid) {
+    throw new AppError(
+      400,
+      verification.reason || "Invalid or expired mobile verification code."
+    );
+  }
+
+  // 2. Ensure mobile number is not already registered
+  const existingPhoneUser = await executeResilientPrismaQuery(() =>
+    prisma.user.findFirst({
+      where: {
+        OR: [
+          { phone: normalizedPhone },
+          { phone: cleanMobile },
+          ...(rawPhone ? [{ phone: rawPhone }] : []),
+        ],
+      },
+      select: { id: true },
+    })
+  );
+
+  if (existingPhoneUser) {
+    throw new AppError(409, "Mobile number already registered. Please login.");
+  }
+
+  // 3. Check optional email uniqueness if provided
+  if (normalizedEmail) {
+    const existingEmailUser = await executeResilientPrismaQuery(() =>
+      prisma.user.findFirst({
+        where: {
+          email: {
+            equals: normalizedEmail,
+            mode: Prisma.QueryMode.insensitive,
+          },
+        },
+        select: { id: true },
+      })
+    );
+
+    if (existingEmailUser) {
+      throw new AppError(
+        409,
+        `An account with email '${normalizedEmail}' already exists.`
+      );
+    }
+  }
+
+  // 4. Create user (and optional unit membership) in PostgreSQL
+  const createdUser = await prisma.$transaction(async (tx) => {
+    const newUser = await tx.user.create({
+      data: {
+        fullName: resolvedName,
+        phone: normalizedPhone,
+        email: normalizedEmail,
+        role: resolvedRole,
+        isActive: true,
+      },
+    });
+
+    if (payload.unitId) {
+      const targetUnit = await tx.unit.findUnique({
+        where: { id: payload.unitId },
+        select: { id: true },
+      });
+
+      if (targetUnit) {
+        await tx.unitMember.create({
+          data: {
+            unitId: targetUnit.id,
+            userId: newUser.id,
+            memberType: payload.memberType || "OWNER",
+            isPrimaryHead: resolvedRole === "SUPER_ADMIN",
+            approvalStatus: resolvedRole === "SUPER_ADMIN" ? "APPROVED" : "PENDING",
+          },
+        });
+      }
+    }
+
+    return tx.user.findUniqueOrThrow({
+      where: { id: newUser.id },
+      include: userMembershipInclude,
+    });
+  });
+
+  const authResult = buildAuthResult(createdUser);
+  return {
+    ...authResult,
+    user: {
+      ...authResult.user,
+      name: createdUser.fullName,
+      phoneVerified: true,
+    },
   };
 };

@@ -63,7 +63,13 @@ export const joinSocietySchema = z
       .trim()
       .email("Invalid email address format")
       .optional()
-      .nullable(),
+      .nullable()
+      .or(z.literal("")),
+    otp: z
+      .string()
+      .trim()
+      .regex(/^\d{6}$/, "OTP must be a 6-digit numeric code")
+      .optional(),
     memberType: z.enum(["OWNER", "TENANT"] as const, {
       error: "memberType must be either OWNER or TENANT",
     }),

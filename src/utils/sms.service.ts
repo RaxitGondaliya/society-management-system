@@ -7,16 +7,18 @@ import axios from "axios";
 export const sanitizeMobileNumber = (mobileNumber: string): string => {
   const trimmed = (mobileNumber || "").trim();
   // Strip '+91', spaces, and dashes first
-  const withoutPrefix = trimmed
+  let cleaned = trimmed
     .replace(/^\+91[\s-]*/, "")
     .replace(/[\s-]/g, "")
     .replace(/\D/g, "");
 
-  if (withoutPrefix.length === 12 && withoutPrefix.startsWith("91")) {
-    return withoutPrefix.slice(2);
+  if (cleaned.length === 12 && cleaned.startsWith("91")) {
+    cleaned = cleaned.slice(2);
   }
 
-  return withoutPrefix.length > 10 ? withoutPrefix.slice(-10) : withoutPrefix;
+  cleaned = cleaned.replace(/^0+/, "");
+
+  return cleaned.length > 10 ? cleaned.slice(-10) : cleaned;
 };
 
 /**

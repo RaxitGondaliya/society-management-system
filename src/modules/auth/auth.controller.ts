@@ -2,14 +2,74 @@ import { Request, Response, NextFunction } from "express";
 import { AppError, successResponse } from "../../utils/apiResponse";
 import { sanitizeMobileNumber } from "../../utils/sms.service";
 import * as authService from "./auth.service";
-import { LoginInput, SendOtpInput, VerifyOtpInput } from "./auth.validation";
-import { registerSociety } from "../societies/society.controller";
+import {
+  LoginInput,
+  RegisterOtpInput,
+  RegisterUserInput,
+  SendOtpInput,
+  VerifyOtpInput,
+  VerifyRegisterOtpInput,
+} from "./auth.validation";
 
 /**
- * Handle user/society registration
+ * Dispatch registration verification OTP to mobile number
+ * POST /api/v1/auth/register-otp
+ * Ensures mobile number does not already exist (409 Conflict if registered).
+ */
+export const sendRegisterOtp = async (
+  req: Request<unknown, unknown, RegisterOtpInput>,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    await authService.requestRegistrationOtp(req.body);
+    res.status(200).json({
+      success: true,
+      message: "Verification OTP sent to mobile.",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Verify 6-digit registration mobile OTP inline before final form submission
+ * POST /api/v1/auth/verify-register-otp
+ */
+export const verifyRegisterOtp = async (
+  req: Request<unknown, unknown, VerifyRegisterOtpInput>,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const result = await authService.verifyRegistrationOtp(req.body);
+    successResponse(res, "Mobile number verified successfully.", result, 200);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Handle user registration with mandatory mobile OTP verification
  * POST /api/v1/auth/register
  */
-export const register = registerSociety;
+export const register = async (
+  req: Request<unknown, unknown, RegisterUserInput>,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const result = await authService.registerUserWithOtp(req.body);
+    successResponse(
+      res,
+      "Registration completed successfully.",
+      result,
+      201
+    );
+  } catch (error) {
+    next(error);
+  }
+};
 
 /**
  * Dispatch verification OTP code

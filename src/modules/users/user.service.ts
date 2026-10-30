@@ -1,6 +1,8 @@
 import { prisma } from "../../config/prisma";
 import { AppError } from "../../utils/apiResponse";
 import { generateToken } from "../../utils/jwt";
+import { sanitizeMobileNumber } from "../../utils/sms.service";
+import { otpService } from "../auth/otp.service";
 import {
   JoinSocietyInput,
   ApprovalDecisionInput,
@@ -11,6 +13,22 @@ import {
  * Submit resident onboarding request to join a society unit
  */
 export const requestToJoinSociety = async (payload: JoinSocietyInput) => {
+  const cleanPhone = sanitizeMobileNumber(payload.phone);
+  const formattedPhone = cleanPhone.length === 10 ? `+91${cleanPhone}` : payload.phone;
+
+  // Verify mobile OTP if provided
+  if (payload.otp) {
+    let verification = await otpService.verifyOtp(cleanPhone, payload.otp, { consume: true });
+    if (!verification.valid) {
+      verification = await otpService.verifyOtp(formattedPhone, payload.otp, { consume: true });
+    }
+    if (!verification.valid) {
+      throw new AppError(400, verification.reason || "Invalid or expired verification code.");
+    }
+    await otpService.clearOtp(cleanPhone);
+    await otpService.clearOtp(formattedPhone);
+  }
+
   // 1. Resolve Society by ID or Code
   const society = payload.societyId
     ? await prisma.society.findUnique({

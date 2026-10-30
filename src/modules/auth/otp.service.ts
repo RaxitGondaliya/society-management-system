@@ -131,7 +131,12 @@ export class OtpService {
   /**
    * Verify candidate OTP against stored hash (Database + In-Memory fallback)
    */
-  public async verifyOtp(destination: string, candidateOtp: string): Promise<VerifyOtpResult> {
+  public async verifyOtp(
+    destination: string,
+    candidateOtp: string,
+    options?: { consume?: boolean }
+  ): Promise<VerifyOtpResult> {
+    const consume = options?.consume !== false;
     const key = this.normalizeKey(destination);
     const now = new Date();
     const candidateHash = this.hashOtp(candidateOtp.trim());
@@ -181,12 +186,14 @@ export class OtpService {
           crypto.timingSafeEqual(candidateBuffer, storedBuffer);
 
         if (isMatch) {
-          // Invalidate record upon successful verification
-          await prisma.otpVerification.update({
-            where: { id: dbRecord.id },
-            data: { isUsed: true },
-          });
-          this.cache.delete(key);
+          if (consume) {
+            // Invalidate record upon successful verification
+            await prisma.otpVerification.update({
+              where: { id: dbRecord.id },
+              data: { isUsed: true },
+            });
+            this.cache.delete(key);
+          }
           return { valid: true };
         }
 
@@ -247,7 +254,9 @@ export class OtpService {
       crypto.timingSafeEqual(candidateBuffer, storedBuffer);
 
     if (isMatch) {
-      this.cache.delete(key);
+      if (consume) {
+        this.cache.delete(key);
+      }
       return { valid: true };
     }
 

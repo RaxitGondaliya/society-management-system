@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { sanitizeMobileNumber } from "../../utils/sms.service";
 
 /**
  * Normalizes registration payloads whether fields are nested (admin, layout)
@@ -15,10 +16,12 @@ export const normalizeRegistrationInput = (raw: any): any => {
 
   // Build admin object with normalized phone and email
   const adminFullName = (raw.admin?.fullName || raw.fullName || raw.adminName || "Administrator").toString().trim();
-  const rawPhone = (raw.admin?.phone || raw.phone || "+919876543210").toString().trim().replace(/\s+/g, "");
-  const adminPhone = rawPhone.startsWith("+") ? rawPhone : `+91${rawPhone}`;
+  const rawPhoneStr = (raw.admin?.phone || raw.phone || "").toString().trim();
+  const clean10 = sanitizeMobileNumber(rawPhoneStr);
+  const adminPhone = clean10.length === 10 ? `+91${clean10}` : (rawPhoneStr.startsWith("+") ? rawPhoneStr : `+91${rawPhoneStr}`);
   const rawEmail = (raw.admin?.email || raw.email || "").toString().trim().toLowerCase();
   const adminEmail = rawEmail.length > 0 ? rawEmail : null;
+  const otp = (raw.otp || raw.admin?.otp || "").toString().trim() || undefined;
 
   // Build layout object
   let layout = raw.layout;
@@ -59,6 +62,7 @@ export const normalizeRegistrationInput = (raw: any): any => {
       phone: adminPhone,
       email: adminEmail,
     },
+    ...(otp ? { otp } : {}),
     layout,
   };
 };
@@ -112,6 +116,11 @@ export const baseRegisterSocietySchema = z
         .nullable()
         .or(z.literal("")),
     }),
+    otp: z
+      .string()
+      .trim()
+      .regex(/^\d{6}$/, "OTP must be a 6-digit numeric code")
+      .optional(),
   })
   .superRefine((data, ctx) => {
     if (data.propertyType === "FLAT") {

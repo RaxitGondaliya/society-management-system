@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import { errorResponse } from "../utils/apiResponse";
 import { verifyToken } from "../utils/jwt";
-import { prisma } from "../config/prisma";
+import { prisma, executeResilientPrismaQuery } from "../config/prisma";
 import { isSessionRevoked } from "../modules/auth/auth.service";
 
 export const authenticateToken = async (
@@ -31,16 +31,18 @@ export const authenticateToken = async (
     const decoded = verifyToken(token);
 
     // Verify user in database to ensure they are active and account exists
-    const user = await prisma.user.findUnique({
-      where: { id: decoded.id },
-      select: {
-        id: true,
-        phone: true,
-        email: true,
-        role: true,
-        isActive: true,
-      },
-    });
+    const user = await executeResilientPrismaQuery(() =>
+      prisma.user.findUnique({
+        where: { id: decoded.id },
+        select: {
+          id: true,
+          phone: true,
+          email: true,
+          role: true,
+          isActive: true,
+        },
+      })
+    );
 
     if (!user) {
       errorResponse(res, "User account associated with this token not found", 401);
@@ -62,13 +64,8 @@ export const authenticateToken = async (
     };
 
     next();
-  } catch (error) {
-    errorResponse(
-      res,
-      "Invalid or expired token",
-      401,
-      error instanceof Error ? error.message : undefined
-    );
+  } catch {
+    errorResponse(res, "Invalid or expired token", 401);
   }
 };
 

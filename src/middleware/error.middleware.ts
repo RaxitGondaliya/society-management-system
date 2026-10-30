@@ -41,12 +41,11 @@ export const errorHandler = (
   if (err instanceof Prisma.PrismaClientKnownRequestError) {
     switch (err.code) {
       case "P2002": {
-        const target = (err.meta?.target as string[]) || ["field"];
         errorResponse(
           res,
-          `Conflict: A record with this ${target.join(", ")} already exists.`,
+          "Conflict: A record with these details already exists.",
           409,
-          { code: err.code, target }
+          { code: err.code }
         );
         return;
       }
@@ -78,9 +77,10 @@ export const errorHandler = (
         return;
       }
       default: {
+        console.error("[Prisma Database Error]:", err.code, err.message);
         errorResponse(
           res,
-          `Database error: ${err.message}`,
+          "Database operation failed",
           400,
           { code: err.code }
         );
@@ -89,12 +89,18 @@ export const errorHandler = (
     }
   }
 
-  // 4. Prisma Query & Schema Validation Errors
-  if (err instanceof Prisma.PrismaClientValidationError) {
+  // 4. Prisma Unknown / Initialization / Validation Errors
+  if (
+    err instanceof Prisma.PrismaClientValidationError ||
+    err instanceof Prisma.PrismaClientUnknownRequestError ||
+    err instanceof Prisma.PrismaClientInitializationError ||
+    err instanceof Prisma.PrismaClientRustPanicError
+  ) {
+    console.error("[Prisma Client Error]:", err.message);
     errorResponse(
       res,
-      "Invalid database query arguments provided to Prisma client.",
-      400
+      "Database operation failed",
+      500
     );
     return;
   }

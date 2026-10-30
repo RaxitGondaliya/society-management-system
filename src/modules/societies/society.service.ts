@@ -2,6 +2,8 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../../config/prisma";
 import { AppError } from "../../utils/apiResponse";
 import { generateToken } from "../../utils/jwt";
+import { sanitizeMobileNumber } from "../../utils/sms.service";
+import { otpService } from "../auth/otp.service";
 import { RegisterSocietyInput, normalizeRegistrationInput } from "./society.validation";
 
 /**
@@ -103,6 +105,20 @@ export const registerSociety = async (
   rawPayload: RegisterSocietyInput
 ): Promise<SocietyRegistrationResult> => {
   const payload = normalizeRegistrationInput(rawPayload);
+
+  // If an OTP is provided on society registration, unconditionally verify it
+  if (payload.otp) {
+    const cleanPhone = sanitizeMobileNumber(payload.admin.phone);
+    let verification = await otpService.verifyOtp(cleanPhone, payload.otp, { consume: true });
+    if (!verification.valid) {
+      verification = await otpService.verifyOtp(`+91${cleanPhone}`, payload.otp, { consume: true });
+    }
+    if (!verification.valid) {
+      throw new AppError(400, verification.reason || "Invalid or expired verification code.");
+    }
+    await otpService.clearOtp(cleanPhone);
+    await otpService.clearOtp(`+91${cleanPhone}`);
+  }
 
   const email = payload.email || payload.admin?.email;
   const societyName = payload.name || payload.societyName;
