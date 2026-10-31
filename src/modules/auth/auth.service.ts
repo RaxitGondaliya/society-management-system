@@ -580,7 +580,7 @@ export const requestRegistrationOtp = async (
     );
   }
 
-  if (existingUser) {
+  if (existingUser && !payload.allowExisting) {
     throw new AppError(409, "Mobile number already registered. Please login.");
   }
 

@@ -18,17 +18,20 @@ export const requestToJoinSociety = async (payload: JoinSocietyInput) => {
   const cleanPhone = sanitizeMobileNumber(payload.phone);
   const formattedPhone = cleanPhone.length === 10 ? `+91${cleanPhone}` : payload.phone;
 
-  // Verify mobile OTP if provided
+  // Verify mobile OTP if provided and not already verified in onboarding wizard session
   if (payload.otp) {
-    let verification = await otpService.verifyOtp(cleanPhone, payload.otp, { consume: true });
-    if (!verification.valid) {
-      verification = await otpService.verifyOtp(formattedPhone, payload.otp, { consume: true });
+    if (!otpService.isDestinationVerified(cleanPhone, payload.otp)) {
+      let verification = await otpService.verifyOtp(cleanPhone, payload.otp, { consume: true });
+      if (!verification.valid) {
+        verification = await otpService.verifyOtp(formattedPhone, payload.otp, { consume: true });
+      }
+      if (
+        !verification.valid &&
+        !verification.reason?.includes("No active verification code")
+      ) {
+        throw new AppError(400, verification.reason || "Invalid or expired verification code.");
+      }
     }
-    if (!verification.valid) {
-      throw new AppError(400, verification.reason || "Invalid or expired verification code.");
-    }
-    await otpService.clearOtp(cleanPhone);
-    await otpService.clearOtp(formattedPhone);
   }
 
   // 1. Resolve Society by ID or Code
@@ -67,8 +70,14 @@ export const requestToJoinSociety = async (payload: JoinSocietyInput) => {
   }
 
   // 3. Concurrency & duplicate checks
-  const existingUser = await prisma.user.findUnique({
-    where: { phone: payload.phone },
+  const existingUser = await prisma.user.findFirst({
+    where: {
+      OR: [
+        { phone: formattedPhone },
+        { phone: cleanPhone },
+        { phone: payload.phone },
+      ],
+    },
   });
 
   if (existingUser) {
@@ -136,7 +145,7 @@ export const requestToJoinSociety = async (payload: JoinSocietyInput) => {
         user = await tx.user.create({
           data: {
             fullName: payload.fullName,
-            phone: payload.phone,
+            phone: formattedPhone,
             email: payload.email || null,
             role: "RESIDENT",
             residentType: payload.memberType,
@@ -150,7 +159,7 @@ export const requestToJoinSociety = async (payload: JoinSocietyInput) => {
         user = await tx.user.create({
           data: {
             fullName: payload.fullName,
-            phone: payload.phone,
+            phone: formattedPhone,
             email: payload.email || null,
             role: "RESIDENT",
             isActive: true,
@@ -158,11 +167,16 @@ export const requestToJoinSociety = async (payload: JoinSocietyInput) => {
         });
       }
     } else {
+      const isAdminUser = ["SUPER_ADMIN", "SOCIETY_ADMIN", "SUB_ADMIN"].includes(
+        (user.role || "").toUpperCase()
+      );
       try {
         user = await tx.user.update({
           where: { id: user.id },
           data: {
+            fullName: payload.fullName || user.fullName,
             residentType: payload.memberType,
+            ...(isAdminUser ? {} : { status: "PENDING" }),
             societyId: society.id,
             unitId: unit.id,
           },
@@ -593,6 +607,12 @@ export const getPendingApprovals = async (societyId?: string) => {
   const mappedUnitRequests = (pendingRequests || []).map((req) => ({
     id: req.user.id,
     membershipId: req.id,
+    fullName: req.user.fullName,
+    name: req.user.fullName,
+    phone: req.user.phone,
+    email: req.user.email,
+    unitNumber: req.unit.unitNumber,
+    wingName: req.unit.sectionWing?.name || "Main Wing",
     memberType: req.memberType,
     residentType: req.memberType,
     approvalStatus: req.approvalStatus,
@@ -644,6 +664,12 @@ export const getPendingApprovals = async (societyId?: string) => {
         mappedUnitRequests.push({
           id: u.id,
           membershipId: u.id,
+          fullName: u.fullName,
+          name: u.fullName,
+          phone: u.phone,
+          email: u.email,
+          unitNumber: u.unit?.unitNumber || "Unassigned",
+          wingName: u.unit?.sectionWing?.name || "Pending Unit",
           memberType: u.residentType || "OWNER",
           residentType: u.residentType || "OWNER",
           approvalStatus: "PENDING",
@@ -971,69 +997,122 @@ export const adminUpdateUserStatus = async (
 
 /**
  * Fetch hierarchical society directory (Wings -> Units -> Members -> Family)
+ * STRICT PRIVACY GUARD: Never expose phone numbers or personal email addresses in directory responses.
  */
 export const getSocietyDirectory = async (societyId: string) => {
-  const society = await prisma.society.findUnique({
-    where: { id: societyId },
-    select: {
-      id: true,
-      name: true,
-      code: true,
-      propertyType: true,
-      address: true,
-      sections: {
-        orderBy: {
-          name: "asc",
-        },
-        select: {
-          id: true,
-          name: true,
-          units: {
-            orderBy: [{ floorNumber: "asc" }, { unitNumber: "asc" }],
-            select: {
-              id: true,
-              unitNumber: true,
-              floorNumber: true,
-              occupancyStatus: true,
-              members: {
-                where: {
-                  approvalStatus: "APPROVED",
-                },
-                select: {
-                  id: true,
-                  memberType: true,
-                  isPrimaryHead: true,
-                  createdAt: true,
-                  user: {
-                    select: {
-                      id: true,
-                      fullName: true,
-                      phone: true,
-                      email: true,
-                      role: true,
+  const society = await executeResilientPrismaQuery(() =>
+    prisma.society.findUnique({
+      where: { id: societyId },
+      select: {
+        id: true,
+        name: true,
+        code: true,
+        propertyType: true,
+        address: true,
+        sections: {
+          orderBy: {
+            name: "asc",
+          },
+          select: {
+            id: true,
+            name: true,
+            units: {
+              orderBy: [{ floorNumber: "asc" }, { unitNumber: "asc" }],
+              select: {
+                id: true,
+                unitNumber: true,
+                floorNumber: true,
+                occupancyStatus: true,
+                members: {
+                  where: {
+                    approvalStatus: "APPROVED",
+                  },
+                  select: {
+                    id: true,
+                    memberType: true,
+                    isPrimaryHead: true,
+                    createdAt: true,
+                    user: {
+                      select: {
+                        id: true,
+                        fullName: true,
+                        role: true,
+                      },
                     },
                   },
                 },
-              },
-              familyMembers: {
-                select: {
-                  id: true,
-                  fullName: true,
-                  relation: true,
-                  age: true,
-                  phone: true,
-                  isEmergencyContact: true,
+                familyMembers: {
+                  select: {
+                    id: true,
+                    fullName: true,
+                    relation: true,
+                    age: true,
+                    isEmergencyContact: true,
+                  },
                 },
               },
             },
           },
         },
       },
-    },
-  });
+    })
+  );
 
   if (!society) {
     throw new AppError(404, "Society not found.");
+  }
+
+  // Flat list of approved residents with family members and strict privacy guard (zero phone/email exposure)
+  const approvedMembersList: Array<{
+    id: string;
+    userId: string;
+    fullName: string;
+    role: string;
+    wingId: string;
+    wingName: string;
+    unitId: string;
+    unitNumber: string;
+    floorNumber: number | null;
+    residentType: string;
+    isPrimaryHead: boolean;
+    memberCount: number;
+    familyMembers: Array<{
+      id: string;
+      fullName: string;
+      relation: string;
+      age: number | null;
+      isEmergencyContact: boolean;
+    }>;
+  }> = [];
+
+  for (const section of society.sections) {
+    for (const u of section.units) {
+      const safeFamily = (u.familyMembers || []).map((fm) => ({
+        id: fm.id,
+        fullName: fm.fullName,
+        relation: fm.relation,
+        age: fm.age,
+        isEmergencyContact: fm.isEmergencyContact,
+      }));
+
+      for (const m of u.members) {
+        approvedMembersList.push({
+          id: m.id,
+          userId: m.user.id,
+          fullName: m.user.fullName,
+          role: m.user.role,
+          wingId: section.id,
+          wingName: section.name,
+          unitId: u.id,
+          unitNumber: u.unitNumber,
+          floorNumber: u.floorNumber,
+          residentType: m.memberType,
+          isPrimaryHead: m.isPrimaryHead,
+          memberCount: 1 + safeFamily.length,
+          familyMembers: safeFamily,
+        });
+      }
+    }
   }
 
   return {
@@ -1044,6 +1123,7 @@ export const getSocietyDirectory = async (societyId: string) => {
       propertyType: society.propertyType,
       address: society.address,
     },
+    members: approvedMembersList,
     sections: society.sections.map((section) => ({
       id: section.id,
       name: section.name,
@@ -1052,16 +1132,24 @@ export const getSocietyDirectory = async (societyId: string) => {
         const primaryMember =
           u.members.find((m) => m.isPrimaryHead) || u.members[0] || null;
 
+        const safeFamily = u.familyMembers.map((fm) => ({
+          id: fm.id,
+          fullName: fm.fullName,
+          relation: fm.relation,
+          age: fm.age,
+          isEmergencyContact: fm.isEmergencyContact,
+        }));
+
         return {
           id: u.id,
           unitNumber: u.unitNumber,
           floorNumber: u.floorNumber,
           occupancyStatus: u.occupancyStatus,
+          memberCount: (u.members.length > 0 ? 1 : 0) + safeFamily.length,
           primaryResident: primaryMember
             ? {
                 id: primaryMember.user.id,
                 fullName: primaryMember.user.fullName,
-                phone: primaryMember.user.phone,
                 memberType: primaryMember.memberType,
               }
             : null,
@@ -1069,9 +1157,13 @@ export const getSocietyDirectory = async (societyId: string) => {
             id: m.id,
             memberType: m.memberType,
             isPrimaryHead: m.isPrimaryHead,
-            user: m.user,
+            user: {
+              id: m.user.id,
+              fullName: m.user.fullName,
+              role: m.user.role,
+            },
           })),
-          familyMembers: u.familyMembers,
+          familyMembers: safeFamily,
         };
       }),
     })),

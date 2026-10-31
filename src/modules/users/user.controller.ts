@@ -123,12 +123,32 @@ export const joinSociety = async (
           email: result.user.email,
           phone: result.user.phone,
           role: result.user.role, // 'RESIDENT'
+          status: result.status, // 'PENDING'
+          residentType: result.memberType,
+          societyId: result.society.id,
+          unitId: result.unit.id,
         },
         requestId: result.requestId,
         status: result.status,
         memberType: result.memberType,
         society: result.society,
         unit: result.unit,
+        memberships: [
+          {
+            id: result.requestId,
+            memberType: result.memberType,
+            isPrimaryHead: false,
+            approvalStatus: result.status,
+            unit: {
+              id: result.unit.id,
+              unitNumber: result.unit.unitNumber,
+              sectionWingName: result.unit.wing,
+              societyId: result.society.id,
+              societyName: result.society.name,
+              societyCode: result.society.code,
+            },
+          },
+        ],
         submittedAt: result.submittedAt,
       },
     });
@@ -206,11 +226,24 @@ export const getDirectory = async (
     let societyId = (req.query.societyId as string) || req.user?.societyId;
 
     if (!societyId && req.user?.id) {
-      const membership = await prisma.unitMember.findFirst({
-        where: { userId: req.user.id, approvalStatus: "APPROVED" },
-        include: { unit: true },
-      });
+      const membership = await executeResilientPrismaQuery(() =>
+        prisma.unitMember.findFirst({
+          where: { userId: req.user!.id },
+          orderBy: [{ isPrimaryHead: "desc" }, { createdAt: "desc" }],
+          include: { unit: true },
+        })
+      );
       societyId = membership?.unit.societyId;
+    }
+
+    if (!societyId) {
+      const firstSociety = await executeResilientPrismaQuery(() =>
+        prisma.society.findFirst({
+          orderBy: { createdAt: "desc" },
+          select: { id: true },
+        })
+      );
+      societyId = firstSociety?.id;
     }
 
     if (!societyId) {

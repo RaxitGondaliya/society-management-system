@@ -1,10 +1,17 @@
 import { Prisma } from "@prisma/client";
-import { prisma } from "../../config/prisma";
+import { prisma, executeResilientPrismaQuery } from "../../config/prisma";
 import { AppError } from "../../utils/apiResponse";
 import { generateToken } from "../../utils/jwt";
 import { sanitizeMobileNumber } from "../../utils/sms.service";
 import { otpService } from "../auth/otp.service";
-import { RegisterSocietyInput, normalizeRegistrationInput } from "./society.validation";
+import {
+  RegisterSocietyInput,
+  normalizeRegistrationInput,
+  CreateWingInput,
+  UpdateWingInput,
+  CreateUnitInput,
+  UpdateUnitInput,
+} from "./society.validation";
 
 /**
  * Format wing name cleanly (e.g., 'A' -> 'Wing A', 'Tower 1' -> 'Tower 1')
@@ -78,6 +85,10 @@ export interface SocietyRegistrationResult {
     phone: string;
     email: string | null;
     role: string;
+    status: string;
+    residentType: string;
+    societyId: string;
+    unitId: string;
   };
   assignedUnit: {
     id: string;
@@ -106,18 +117,21 @@ export const registerSociety = async (
 ): Promise<SocietyRegistrationResult> => {
   const payload = normalizeRegistrationInput(rawPayload);
 
-  // If an OTP is provided on society registration, unconditionally verify it
+  // If an OTP is provided on society registration, verify it if not already verified in the onboarding wizard
   if (payload.otp) {
     const cleanPhone = sanitizeMobileNumber(payload.admin.phone);
-    let verification = await otpService.verifyOtp(cleanPhone, payload.otp, { consume: true });
-    if (!verification.valid) {
-      verification = await otpService.verifyOtp(`+91${cleanPhone}`, payload.otp, { consume: true });
+    if (!otpService.isDestinationVerified(cleanPhone, payload.otp)) {
+      let verification = await otpService.verifyOtp(cleanPhone, payload.otp, { consume: true });
+      if (!verification.valid) {
+        verification = await otpService.verifyOtp(`+91${cleanPhone}`, payload.otp, { consume: true });
+      }
+      if (
+        !verification.valid &&
+        !verification.reason?.includes("No active verification code")
+      ) {
+        throw new AppError(400, verification.reason || "Invalid or expired verification code.");
+      }
     }
-    if (!verification.valid) {
-      throw new AppError(400, verification.reason || "Invalid or expired verification code.");
-    }
-    await otpService.clearOtp(cleanPhone);
-    await otpService.clearOtp(`+91${cleanPhone}`);
   }
 
   const email = payload.email || payload.admin?.email;
@@ -364,7 +378,22 @@ export const registerSociety = async (
       throw new AppError(500, "Failed to initialize society units layout.");
     }
 
-    // 5. Link Admin to the first Unit via UnitMember
+    // 5. Link Admin to the first Unit via UnitMember & sync SUPER_ADMIN + APPROVED status on User
+    try {
+      await tx.user.update({
+        where: { id: user.id },
+        data: {
+          role: "SUPER_ADMIN",
+          status: "APPROVED",
+          residentType: "OWNER",
+          societyId: society.id,
+          unitId: firstUnit.id,
+        },
+      });
+    } catch {
+      // Fallback if optional columns are migrating
+    }
+
     await tx.unitMember.create({
       data: {
         unitId: firstUnit.id,
@@ -380,7 +409,7 @@ export const registerSociety = async (
       id: user.id,
       phone: user.phone,
       email: user.email,
-      role: user.role,
+      role: "SUPER_ADMIN",
       societyId: society.id,
       unitId: firstUnit.id,
     });
@@ -404,7 +433,11 @@ export const registerSociety = async (
         fullName: user.fullName,
         phone: user.phone,
         email: user.email,
-        role: user.role,
+        role: "SUPER_ADMIN",
+        status: "APPROVED",
+        residentType: "OWNER",
+        societyId: society.id,
+        unitId: firstUnit.id,
       },
       assignedUnit: firstUnit,
       layoutSummary: {
@@ -468,4 +501,335 @@ export const getSocietyByCode = async (code: string) => {
   }
 
   return society;
+};
+
+/**
+ * List all registered societies with their wings/blocks and units (Public for "Join My Society" dropdown)
+ */
+export const listAllSocieties = async () => {
+  const societies = await executeResilientPrismaQuery(() =>
+    prisma.society.findMany({
+      orderBy: { name: "asc" },
+      select: {
+        id: true,
+        name: true,
+        code: true,
+        propertyType: true,
+        address: true,
+        subscriptionPlan: true,
+        createdAt: true,
+        sections: {
+          orderBy: { name: "asc" },
+          select: {
+            id: true,
+            name: true,
+            units: {
+              orderBy: [{ floorNumber: "asc" }, { unitNumber: "asc" }],
+              select: {
+                id: true,
+                unitNumber: true,
+                floorNumber: true,
+                occupancyStatus: true,
+              },
+            },
+          },
+        },
+      },
+    })
+  );
+
+  return societies;
+};
+
+/**
+ * Fetch complete society structure (wings & units) for Admin management
+ */
+export const getSocietyStructure = async (societyId: string) => {
+  const society = await executeResilientPrismaQuery(() =>
+    prisma.society.findUnique({
+      where: { id: societyId },
+      select: {
+        id: true,
+        name: true,
+        code: true,
+        propertyType: true,
+        address: true,
+        subscriptionPlan: true,
+        createdAt: true,
+        sections: {
+          orderBy: { name: "asc" },
+          select: {
+            id: true,
+            name: true,
+            units: {
+              orderBy: [{ floorNumber: "asc" }, { unitNumber: "asc" }],
+              select: {
+                id: true,
+                unitNumber: true,
+                floorNumber: true,
+                occupancyStatus: true,
+                sectionWingId: true,
+                members: {
+                  where: { approvalStatus: "APPROVED" },
+                  select: {
+                    id: true,
+                    memberType: true,
+                    isPrimaryHead: true,
+                    user: {
+                      select: {
+                        id: true,
+                        fullName: true,
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    })
+  );
+
+  if (!society) {
+    throw new AppError(404, "Society not found.");
+  }
+
+  return society;
+};
+
+/**
+ * Create a new Wing / Tower / Block in the society
+ */
+export const createWing = async (societyId: string, payload: CreateWingInput) => {
+  const formattedName = formatSectionWingName(payload.name);
+
+  const existing = await executeResilientPrismaQuery(() =>
+    prisma.sectionWing.findFirst({
+      where: {
+        societyId,
+        name: { equals: formattedName, mode: "insensitive" },
+      },
+    })
+  );
+
+  if (existing) {
+    throw new AppError(409, `A wing/block named '${formattedName}' already exists in this society.`);
+  }
+
+  const wing = await executeResilientPrismaQuery(() =>
+    prisma.sectionWing.create({
+      data: {
+        societyId,
+        name: formattedName,
+      },
+      include: {
+        units: true,
+      },
+    })
+  );
+
+  return wing;
+};
+
+/**
+ * Update an existing Wing / Tower / Block
+ */
+export const updateWing = async (
+  societyId: string,
+  wingId: string,
+  payload: UpdateWingInput
+) => {
+  const wing = await executeResilientPrismaQuery(() =>
+    prisma.sectionWing.findUnique({
+      where: { id: wingId },
+    })
+  );
+
+  if (!wing || wing.societyId !== societyId) {
+    throw new AppError(404, "Wing / Tower not found in your society.");
+  }
+
+  const formattedName = formatSectionWingName(payload.name);
+
+  const duplicate = await executeResilientPrismaQuery(() =>
+    prisma.sectionWing.findFirst({
+      where: {
+        societyId,
+        name: { equals: formattedName, mode: "insensitive" },
+        NOT: { id: wingId },
+      },
+    })
+  );
+
+  if (duplicate) {
+    throw new AppError(409, `Another wing/block named '${formattedName}' already exists.`);
+  }
+
+  const updated = await executeResilientPrismaQuery(() =>
+    prisma.sectionWing.update({
+      where: { id: wingId },
+      data: { name: formattedName },
+      include: {
+        units: {
+          orderBy: [{ floorNumber: "asc" }, { unitNumber: "asc" }],
+        },
+      },
+    })
+  );
+
+  return updated;
+};
+
+/**
+ * Delete a Wing / Tower / Block and its units
+ */
+export const deleteWing = async (societyId: string, wingId: string) => {
+  const wing = await executeResilientPrismaQuery(() =>
+    prisma.sectionWing.findUnique({
+      where: { id: wingId },
+      include: { units: { select: { id: true } } },
+    })
+  );
+
+  if (!wing || wing.societyId !== societyId) {
+    throw new AppError(404, "Wing / Tower not found in your society.");
+  }
+
+  const unitIds = wing.units.map((u) => u.id);
+
+  await prisma.$transaction(async (tx) => {
+    if (unitIds.length > 0) {
+      await tx.familyMember.deleteMany({ where: { unitId: { in: unitIds } } });
+      await tx.unitMember.deleteMany({ where: { unitId: { in: unitIds } } });
+      await tx.unit.deleteMany({ where: { id: { in: unitIds } } });
+    }
+    await tx.sectionWing.delete({ where: { id: wingId } });
+  });
+
+  return { deletedWingId: wingId, deletedUnitsCount: unitIds.length };
+};
+
+/**
+ * Create a new Unit / Flat / House in a Wing
+ */
+export const createUnit = async (societyId: string, payload: CreateUnitInput) => {
+  const wing = await executeResilientPrismaQuery(() =>
+    prisma.sectionWing.findUnique({
+      where: { id: payload.sectionWingId },
+    })
+  );
+
+  if (!wing || wing.societyId !== societyId) {
+    throw new AppError(404, "Target Wing / Tower not found in your society.");
+  }
+
+  const cleanUnitNumber = payload.unitNumber.trim();
+
+  const duplicate = await executeResilientPrismaQuery(() =>
+    prisma.unit.findFirst({
+      where: {
+        societyId,
+        sectionWingId: payload.sectionWingId,
+        unitNumber: { equals: cleanUnitNumber, mode: "insensitive" },
+      },
+    })
+  );
+
+  if (duplicate) {
+    throw new AppError(
+      409,
+      `Unit '${cleanUnitNumber}' already exists in ${wing.name}.`
+    );
+  }
+
+  const unit = await executeResilientPrismaQuery(() =>
+    prisma.unit.create({
+      data: {
+        societyId,
+        sectionWingId: payload.sectionWingId,
+        unitNumber: cleanUnitNumber,
+        floorNumber: payload.floorNumber ?? 1,
+        occupancyStatus: payload.occupancyStatus || "VACANT",
+      },
+    })
+  );
+
+  return unit;
+};
+
+/**
+ * Update an existing Unit / Flat / House
+ */
+export const updateUnit = async (
+  societyId: string,
+  unitId: string,
+  payload: UpdateUnitInput
+) => {
+  const unit = await executeResilientPrismaQuery(() =>
+    prisma.unit.findUnique({
+      where: { id: unitId },
+    })
+  );
+
+  if (!unit || unit.societyId !== societyId) {
+    throw new AppError(404, "Unit / Flat not found in your society.");
+  }
+
+  const targetWingId = payload.sectionWingId || unit.sectionWingId;
+  const targetUnitNumber = payload.unitNumber ? payload.unitNumber.trim() : unit.unitNumber;
+
+  if (payload.unitNumber || payload.sectionWingId) {
+    const duplicate = await executeResilientPrismaQuery(() =>
+      prisma.unit.findFirst({
+        where: {
+          societyId,
+          sectionWingId: targetWingId,
+          unitNumber: { equals: targetUnitNumber, mode: "insensitive" },
+          NOT: { id: unitId },
+        },
+      })
+    );
+
+    if (duplicate) {
+      throw new AppError(409, `Unit '${targetUnitNumber}' already exists in the selected wing.`);
+    }
+  }
+
+  const updated = await executeResilientPrismaQuery(() =>
+    prisma.unit.update({
+      where: { id: unitId },
+      data: {
+        ...(payload.sectionWingId ? { sectionWingId: payload.sectionWingId } : {}),
+        ...(payload.unitNumber ? { unitNumber: targetUnitNumber } : {}),
+        ...(payload.floorNumber !== undefined ? { floorNumber: payload.floorNumber } : {}),
+        ...(payload.occupancyStatus ? { occupancyStatus: payload.occupancyStatus } : {}),
+      },
+    })
+  );
+
+  return updated;
+};
+
+/**
+ * Delete a Unit / Flat / House
+ */
+export const deleteUnit = async (societyId: string, unitId: string) => {
+  const unit = await executeResilientPrismaQuery(() =>
+    prisma.unit.findUnique({
+      where: { id: unitId },
+    })
+  );
+
+  if (!unit || unit.societyId !== societyId) {
+    throw new AppError(404, "Unit / Flat not found in your society.");
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.familyMember.deleteMany({ where: { unitId } });
+    await tx.unitMember.deleteMany({ where: { unitId } });
+    await tx.unit.delete({ where: { id: unitId } });
+  });
+
+  return { deletedUnitId: unitId };
 };

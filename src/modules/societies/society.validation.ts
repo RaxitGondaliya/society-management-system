@@ -168,5 +168,66 @@ export const getSocietyByCodeSchema = z.object({
     .min(3, "Society code must be at least 3 characters"),
 });
 
+export const createWingSchema = z.object({
+  name: z
+    .string({ error: "Wing/Tower/Block name is required" })
+    .trim()
+    .min(1, "Wing/Tower/Block name cannot be empty")
+    .max(100, "Wing/Tower/Block name cannot exceed 100 characters"),
+  societyId: z.string().trim().uuid().optional(),
+});
+
+export const updateWingSchema = z.object({
+  name: z
+    .string({ error: "Wing/Tower/Block name is required" })
+    .trim()
+    .min(1, "Wing/Tower/Block name cannot be empty")
+    .max(100, "Wing/Tower/Block name cannot exceed 100 characters"),
+});
+
+export const wingIdParamSchema = z.object({
+  wingId: z.string({ error: "Wing ID is required" }).trim().uuid("Invalid Wing ID format"),
+});
+
+export const createUnitSchema = z.object({
+  sectionWingId: z
+    .string({ error: "Wing/Tower ID is required" })
+    .trim()
+    .uuid("Invalid Wing/Tower ID format"),
+  unitNumber: z
+    .string({ error: "Unit/Flat/House number is required" })
+    .trim()
+    .min(1, "Unit/Flat/House number cannot be empty")
+    .max(50, "Unit/Flat/House number cannot exceed 50 characters"),
+  floorNumber: z.coerce.number().int().min(0).max(200).optional().default(1),
+  occupancyStatus: z
+    .enum(["VACANT", "OCCUPIED_OWNER", "OCCUPIED_TENANT"] as const)
+    .optional()
+    .default("VACANT"),
+  societyId: z.string().trim().uuid().optional(),
+});
+
+export const updateUnitSchema = z.object({
+  sectionWingId: z.string().trim().uuid("Invalid Wing/Tower ID format").optional(),
+  unitNumber: z
+    .string()
+    .trim()
+    .min(1, "Unit/Flat/House number cannot be empty")
+    .max(50, "Unit/Flat/House number cannot exceed 50 characters")
+    .optional(),
+  floorNumber: z.coerce.number().int().min(0).max(200).optional(),
+  occupancyStatus: z
+    .enum(["VACANT", "OCCUPIED_OWNER", "OCCUPIED_TENANT"] as const)
+    .optional(),
+});
+
+export const societyUnitIdParamSchema = z.object({
+  unitId: z.string({ error: "Unit ID is required" }).trim().uuid("Invalid Unit ID format"),
+});
+
 export type RegisterSocietyInput = z.infer<typeof baseRegisterSocietySchema>;
 export type GetSocietyByCodeInput = z.infer<typeof getSocietyByCodeSchema>;
+export type CreateWingInput = z.infer<typeof createWingSchema>;
+export type UpdateWingInput = z.infer<typeof updateWingSchema>;
+export type CreateUnitInput = z.infer<typeof createUnitSchema>;
+export type UpdateUnitInput = z.infer<typeof updateUnitSchema>;
