@@ -139,15 +139,14 @@ export class OtpService {
   }
 
   /**
-   * Store the HMAC-SHA256 hash of a generated 6-digit OTP in memory cache and database
+   * Synchronously populate the in-memory OTP cache for all candidate keys (+91 and 10-digit)
+   * before any asynchronous database or SMS operation runs.
    */
-  public async saveOtp(destination: string, rawOtp: string): Promise<void> {
+  public cacheOtpSync(destination: string, rawOtp: string): void {
     const keys = this.getCandidateKeys(destination);
     const hash = this.hashOtp(rawOtp);
     const now = Date.now();
-    const expiresAt = new Date(now + this.TTL_MS);
 
-    // 1. Update in-memory cache for all candidate keys (+91 and 10-digit)
     for (const k of keys) {
       this.cache.set(k, {
         hash,
@@ -157,13 +156,24 @@ export class OtpService {
         createdAt: now,
       });
     }
+  }
+
+  /**
+   * Store the HMAC-SHA256 hash of a generated 6-digit OTP in memory cache and database
+   */
+  public async saveOtp(destination: string, rawOtp: string): Promise<void> {
+    this.cacheOtpSync(destination, rawOtp);
+    const keys = this.getCandidateKeys(destination);
+    const hash = this.hashOtp(rawOtp);
+    const now = Date.now();
+    const expiresAt = new Date(now + this.TTL_MS);
 
     // 2. Persist hash with expiration timestamp to database
     const primaryKey = this.normalizeKey(destination);
     try {
       await prisma.otpVerification.updateMany({
         where: {
-          destination: primaryKey,
+          destination: { in: keys.length > 0 ? keys : [primaryKey] },
           isUsed: false,
         },
         data: {

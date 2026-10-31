@@ -135,6 +135,7 @@ export const registerOtpSchema = z
     mobile: z.string().trim().optional(),
     identifier: z.string().trim().optional(),
     allowExisting: z.boolean().optional(),
+    otpCode: z.string().trim().optional(),
   })
   .refine((data) => Boolean(data.phone || data.mobile || data.identifier), {
     message: "Mobile phone number is required",

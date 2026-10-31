@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import { AppError, successResponse } from "../../utils/apiResponse";
 import { flushStdout, sanitizeMobileNumber } from "../../utils/sms.service";
 import * as authService from "./auth.service";
+import { otpService } from "./otp.service";
 import {
   LoginInput,
   RegisterOtpInput,
@@ -12,35 +13,43 @@ import {
 } from "./auth.validation";
 
 /**
- * Dispatch registration verification OTP to mobile number
+ * Dispatch registration / Join Society verification OTP to mobile number
  * POST /api/v1/auth/register-otp
- * Ensures mobile number does not already exist (409 Conflict if registered).
+ * Synchronously generates the 6-digit OTP, force-writes the OTP banner to process.stdout
+ * before any async task/Fast2SMS/DB query, and caches it in otpService.
  */
 export const sendRegisterOtp = async (
   req: Request<unknown, unknown, RegisterOtpInput>,
   res: Response,
   next: NextFunction
 ): Promise<void> => {
-  const rawPhone = (
-    req.body?.phone ||
-    req.body?.mobile ||
-    req.body?.identifier ||
-    ""
-  ).trim();
-  const cleanMobile = sanitizeMobileNumber(rawPhone);
+  const rawMobile = req.body?.phone || req.body?.mobile || req.body?.identifier || "";
+  const sanitizedMobile = String(rawMobile)
+    .replace(/\D/g, "")
+    .replace(/^0+/, "")
+    .slice(-10);
 
+  const generatedOtp = otpService.generateOtp();
+
+  // Force-write the OTP log banner directly to process.stdout BEFORE any async task, Fast2SMS dispatch, or DB query
+  const banner = `\n========================================\n[JOIN SOCIETY OTP DISPATCH]\nDestination: ${sanitizedMobile}\nOTP: >>> ${generatedOtp} <<<\nTimestamp: ${new Date().toISOString()}\n========================================\n`;
+  process.stdout.write(banner);
+  console.log(banner);
   flushStdout();
-  console.log(
-    `[Register OTP Request] Incoming mobile registration request for: ${rawPhone}`
-  );
-  flushStdout();
+
+  // Immediately cache the generated OTP in memory under both 10-digit and +91 formats
+  if (sanitizedMobile) {
+    otpService.cacheOtpSync(sanitizedMobile, generatedOtp);
+    otpService.cacheOtpSync(`+91${sanitizedMobile}`, generatedOtp);
+  }
 
   try {
     await authService.requestRegistrationOtp({
       ...req.body,
-      phone: cleanMobile,
-      mobile: cleanMobile,
-      identifier: rawPhone || cleanMobile,
+      phone: sanitizedMobile,
+      mobile: sanitizedMobile,
+      identifier: String(rawMobile || sanitizedMobile),
+      otpCode: generatedOtp,
     });
     res.status(200).json({
       success: true,

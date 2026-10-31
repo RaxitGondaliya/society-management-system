@@ -54,7 +54,9 @@ app.use("/api/v1", healthRoutes);
 
 // 6. Business Modules (Modules 1 through 11)
 app.use("/api/v1/societies", societyRoutes);
+app.use("/api/societies", societyRoutes);
 app.use("/api/v1/auth", authRoutes);
+app.use("/api/auth", authRoutes);
 app.use("/api/v1/users", userRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/v1/admin", adminRoutes);

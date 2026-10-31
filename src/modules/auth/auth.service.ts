@@ -327,15 +327,19 @@ export const requestOtp = async (
 
     return { destination, channel: "email", recipientName: user.fullName };
   } else {
+    const mobileBanner = `\n========================================\n[MOBILE OTP DISPATCH]\nDestination: ${cleanMobile || destination}\nOTP: >>> ${rawOtp} <<<\nTimestamp: ${new Date().toISOString()}\n========================================\n`;
+    process.stdout.write(mobileBanner);
+    console.log(mobileBanner);
     flushStdout();
-    console.log(`\n========================================\n[MOBILE OTP DISPATCH] Destination: ${cleanMobile || destination} | OTP: >>> ${rawOtp} <<<\n========================================\n`);
-    flushStdout();
+    otpService.cacheOtpSync(destination, rawOtp);
+    if (cleanMobile) {
+      otpService.cacheOtpSync(cleanMobile, rawOtp);
+    }
     await otpService.saveOtp(destination, rawOtp);
     if (cleanMobile) {
       await otpService.saveOtp(cleanMobile, rawOtp);
     }
     // Dispatch SMS OTP via Fast2SMS Quick Route (route=q)
-    console.info(`[AuthService] Attempting to send SMS OTP to registered mobile: ${destination}`);
     await sendMobileOtp(cleanMobile || destination, rawOtp);
     flushStdout();
     return { destination, channel: "mobile", recipientName: user.fullName };
@@ -536,21 +540,33 @@ export const getCurrentUser = async (userId: string): Promise<AuthSuccessResult>
 };
 
 /**
- * 5. Dispatch Registration Mobile OTP (POST /api/v1/auth/register-otp)
- * Ensures mobile number does NOT already exist in DB (returns 409 Conflict if registered).
- * Generates 6-digit OTP, logs prominent terminal fallback banner immediately,
- * caches/stores via otpService, and dispatches via Fast2SMS (route=q).
+ * 5. Dispatch Registration / Join Society Mobile OTP (POST /api/v1/auth/register-otp)
+ * Generates (or reuses controller-generated) 6-digit OTP, force-writes prominent terminal fallback banner,
+ * caches/stores via otpService before any DB check, and dispatches via Fast2SMS (route=q).
  */
 export const requestRegistrationOtp = async (
   payload: RegisterOtpInput
 ): Promise<{ destination: string; cleanMobile: string; channel: "mobile" }> => {
-  const rawPhone = (
+  const rawMobile =
     payload.phone ||
     payload.mobile ||
     payload.identifier ||
-    ""
-  ).trim();
-  const cleanMobile = sanitizeMobileNumber(rawPhone);
+    "";
+  const sanitizedMobile = String(rawMobile)
+    .replace(/\D/g, "")
+    .replace(/^0+/, "")
+    .slice(-10);
+  const cleanMobile = sanitizedMobile || sanitizeMobileNumber(String(rawMobile));
+
+  const otpCode = payload.otpCode || otpService.generateOtp();
+
+  // If called directly without controller pre-logging, force-write the banner before any async work
+  if (!payload.otpCode) {
+    const banner = `\n========================================\n[JOIN SOCIETY OTP DISPATCH]\nDestination: ${cleanMobile}\nOTP: >>> ${otpCode} <<<\nTimestamp: ${new Date().toISOString()}\n========================================\n`;
+    process.stdout.write(banner);
+    console.log(banner);
+    flushStdout();
+  }
 
   if (!/^[6-9]\d{9}$/.test(cleanMobile)) {
     throw new AppError(400, "Please provide a valid 10-digit Indian mobile number.");
@@ -558,7 +574,13 @@ export const requestRegistrationOtp = async (
 
   const normalizedPhone = `+91${cleanMobile}`;
 
-  // Ensure mobile number does NOT already exist in database
+  // 1. Immediately cache & persist OTP in memory & DB under both +91 and 10-digit keys BEFORE any user lookup
+  otpService.cacheOtpSync(normalizedPhone, otpCode);
+  otpService.cacheOtpSync(cleanMobile, otpCode);
+  await otpService.saveOtp(normalizedPhone, otpCode);
+  await otpService.saveOtp(cleanMobile, otpCode);
+
+  // 2. Check if mobile number already exists in database (only block if allowExisting is explicitly false and not Join Society)
   let existingUser: { id: string; phone: string } | null | undefined = null;
   try {
     existingUser = await executeResilientPrismaQuery(() =>
@@ -567,36 +589,23 @@ export const requestRegistrationOtp = async (
           OR: [
             { phone: normalizedPhone },
             { phone: cleanMobile },
-            ...(rawPhone ? [{ phone: rawPhone }] : []),
+            ...(rawMobile ? [{ phone: String(rawMobile).trim() }] : []),
           ],
         },
         select: { id: true, phone: true },
       })
     );
   } catch (dbErr: any) {
-    console.warn(
-      "[AuthService] Database lookup warning during register-otp (continuing with OTP generation):",
-      dbErr?.message || dbErr
-    );
+    const dbWarn = `[AuthService] Database lookup warning during register-otp (continuing with OTP dispatch): ${dbErr?.message || dbErr}\n`;
+    process.stdout.write(dbWarn);
+    console.warn(dbWarn);
   }
 
-  if (existingUser && !payload.allowExisting) {
+  if (existingUser && payload.allowExisting === false) {
     throw new AppError(409, "Mobile number already registered. Please login.");
   }
 
-  // 1. Generate 6-digit registration OTP code
-  const otpCode = otpService.generateOtp();
-
-  // 2. Immediately print prominent fallback log banner BEFORE saving to DB or dispatching to Fast2SMS
-  flushStdout();
-  console.log(`\n========================================\n[REGISTRATION OTP DISPATCH] Destination: ${cleanMobile} | OTP: >>> ${otpCode} <<<\n========================================\n`);
-  flushStdout();
-
-  // 3. Store OTP in memory & DB under both +91 and 10-digit keys
-  await otpService.saveOtp(normalizedPhone, otpCode);
-  await otpService.saveOtp(cleanMobile, otpCode);
-
-  // 4. Await Fast2SMS Quick Route (route=q) dispatch and its internal fallback logging
+  // 3. Await Fast2SMS Quick Route (route=q) dispatch and its internal fallback logging
   await sendMobileOtp(cleanMobile, otpCode);
   flushStdout();
 

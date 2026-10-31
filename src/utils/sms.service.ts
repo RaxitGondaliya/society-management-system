@@ -52,26 +52,25 @@ export async function sendMobileOtp(
   mobileNumber: string,
   otpCode: string
 ): Promise<boolean> {
-  const cleanMobile = sanitizeMobileNumber(mobileNumber);
+  const cleanMobile = String(mobileNumber || "")
+    .replace(/\D/g, "")
+    .replace(/^0+/, "")
+    .slice(-10) || sanitizeMobileNumber(mobileNumber);
 
-  flushStdout();
-  // Always log formatted fallback message to terminal
-  console.log(
-    "\n[FALLBACK OTP LOG] Destination:",
-    cleanMobile,
-    "| OTP: >>>",
-    otpCode,
-    "<<<\n"
-  );
+  // Force immediate output via process.stdout.write in normal attempt block
+  const attemptBanner = `\n========================================\n[FALLBACK OTP LOG]\nDestination: ${cleanMobile}\nOTP: >>> ${otpCode} <<<\nTimestamp: ${new Date().toISOString()}\n========================================\n`;
+  process.stdout.write(attemptBanner);
+  console.log(attemptBanner);
   flushStdout();
 
   try {
     const apiKey = process.env.FAST2SMS_API_KEY;
 
     if (!apiKey) {
-      console.warn(
-        "[Fast2SMS Notice] FAST2SMS_API_KEY is not configured. Proceeding with terminal fallback OTP."
-      );
+      const noKeyLog = `\n[Fast2SMS Notice] FAST2SMS_API_KEY is not configured. Using terminal fallback OTP for ${cleanMobile}: >>> ${otpCode} <<<\n`;
+      process.stdout.write(noKeyLog);
+      console.warn(noKeyLog);
+      flushStdout();
       return true;
     }
 
@@ -93,17 +92,21 @@ export async function sendMobileOtp(
     );
 
     if (response?.data?.return === false) {
-      console.warn(
-        "[Fast2SMS Warning] Provider rejected SMS dispatch:",
+      const rejectLog = `\n[Fast2SMS Warning] Provider rejected SMS dispatch (${JSON.stringify(
         response.data?.message || response.data
-      );
+      )}). Terminal fallback OTP for ${cleanMobile}: >>> ${otpCode} <<<\n`;
+      process.stdout.write(rejectLog);
+      console.warn(rejectLog);
+      flushStdout();
       return true;
     }
 
-    console.log(
-      "[Fast2SMS Dispatch Success] Request ID:",
+    const successLog = `\n[Fast2SMS Dispatch Success] Destination: ${cleanMobile} | OTP: >>> ${otpCode} <<< | Request ID: ${
       response?.data?.request_id || "OK"
-    );
+    }\n`;
+    process.stdout.write(successLog);
+    console.log(successLog);
+    flushStdout();
     return true;
   } catch (error: any) {
     const errDetails =
@@ -111,10 +114,12 @@ export async function sendMobileOtp(
       error?.response?.data ||
       error?.message ||
       error;
-    console.warn(
-      "[Fast2SMS Fallback Notice] SMS gateway error or insufficient balance (continuing with fallback OTP):",
-      errDetails
-    );
+    const catchFallbackBanner = `\n========================================\n[Fast2SMS Fallback Notice] SMS gateway error or insufficient balance.\nDestination: ${cleanMobile}\nFallback OTP: >>> ${otpCode} <<<\nError: ${
+      typeof errDetails === "string" ? errDetails : JSON.stringify(errDetails)
+    }\nTimestamp: ${new Date().toISOString()}\n========================================\n`;
+    process.stdout.write(catchFallbackBanner);
+    console.warn(catchFallbackBanner);
+    flushStdout();
     // Do NOT throw 500 error or crash; return true so frontend verification flow is not blocked
     return true;
   }
