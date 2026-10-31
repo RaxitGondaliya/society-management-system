@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { validate } from "../../middleware/validate.middleware";
-import { authenticate } from "../../middleware/auth.middleware";
-import { isAdmin } from "../../middleware/role.middleware";
+import { authenticate, authenticateToken } from "../../middleware/auth.middleware";
+import { authorizeRoles, isAdmin } from "../../middlewares/rbac.middleware";
 import * as userController from "./user.controller";
 import {
   joinSocietySchema,
@@ -9,9 +9,59 @@ import {
   membershipIdParamSchema,
   updateOccupancySchema,
   unitIdParamSchema,
+  updateMyProfileSchema,
+  adminUserIdParamSchema,
+  adminUpdateUserStatusSchema,
 } from "./user.validation";
 
 const router = Router();
+
+/**
+ * @route   GET /api/v1/users/me
+ * @desc    Fetch current logged-in user profile, role, status, society details, and associated unit
+ * @access  Protected
+ */
+router.get("/me", authenticateToken, userController.getCurrentUser);
+
+/**
+ * @route   PUT /api/v1/users/me
+ * @desc    Update personal profile info (name, residentType, emergencyContact, avatarUrl)
+ * @access  Protected
+ */
+router.put(
+  "/me",
+  authenticateToken,
+  validate({ body: updateMyProfileSchema }),
+  userController.updateCurrentUser
+);
+
+/**
+ * @route   PATCH /api/v1/users/me
+ * @desc    Alias for PUT /api/v1/users/me
+ * @access  Protected
+ */
+router.patch(
+  "/me",
+  authenticateToken,
+  validate({ body: updateMyProfileSchema }),
+  userController.updateCurrentUser
+);
+
+/**
+ * @route   PATCH /api/v1/users/:id/status
+ * @desc    Admin approve or reject a resident onboarding request
+ * @access  Protected (SUPER_ADMIN, SOCIETY_ADMIN, SUB_ADMIN)
+ */
+router.patch(
+  "/:id/status",
+  authenticate,
+  authorizeRoles("SUPER_ADMIN", "SOCIETY_ADMIN", "SUB_ADMIN"),
+  validate({
+    params: adminUserIdParamSchema,
+    body: adminUpdateUserStatusSchema,
+  }),
+  userController.updateResidentStatus
+);
 
 /**
  * @route   POST /api/v1/users/join

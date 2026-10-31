@@ -26,6 +26,22 @@ async function bootstrap() {
     await prisma.$connect().catch((err) => {
       console.warn("[Server Warning] Initial DB connection check warning:", err.message);
     });
+
+    // Idempotently ensure RBAC & Profile columns exist on User table in PostgreSQL
+    try {
+      await prisma.$executeRawUnsafe(`
+        ALTER TABLE "User"
+        ADD COLUMN IF NOT EXISTS "residentType" TEXT,
+        ADD COLUMN IF NOT EXISTS "status" TEXT DEFAULT 'PENDING',
+        ADD COLUMN IF NOT EXISTS "societyId" TEXT,
+        ADD COLUMN IF NOT EXISTS "unitId" TEXT,
+        ADD COLUMN IF NOT EXISTS "avatarUrl" TEXT,
+        ADD COLUMN IF NOT EXISTS "emergencyContact" TEXT;
+      `);
+    } catch (schemaErr: any) {
+      console.warn("[Server Notice] RBAC column check notice:", schemaErr?.message || schemaErr);
+    }
+
     console.log("✅ Successfully connected to PostgreSQL (society_db) via Prisma.");
 
 

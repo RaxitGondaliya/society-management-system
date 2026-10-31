@@ -8,6 +8,26 @@ datasource db {
 }
 
 // ==========================================
+// 0. RBAC & ONBOARDING ENUMS
+enum Role {
+  SUPER_ADMIN
+  SOCIETY_ADMIN
+  SUB_ADMIN
+  RESIDENT
+  GUARD
+}
+
+enum ResidentType {
+  OWNER
+  TENANT
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 // 1. SOCIETY, UNITS & MEMBERSHIP (MODULE 1)
 // ==========================================
 
@@ -24,6 +44,7 @@ model Society {
   bankBeneficiaryName String?
   upiId              String?
   subscriptionPlan   String   @default("ACTIVE")
+  users              User[]   @relation("SocietyUsers")
   createdAt          DateTime @default(now())
 
   sections           SectionWing[]
@@ -94,6 +115,8 @@ model Unit {
   documents        SocietyDocument[]
   emergencyIncidents EmergencyIncident[]
 
+  users              User[]              @relation("UnitUsers")
+
   @@unique([sectionWingId, unitNumber])
 }
 
@@ -102,7 +125,15 @@ model User {
   phone     String   @unique
   email     String?  @unique
   fullName  String
-  role      String   // 'SUPER_ADMIN', 'SUB_ADMIN', 'RESIDENT', 'GUARD'
+  role             String   @default("RESIDENT") // 'SUPER_ADMIN', 'SOCIETY_ADMIN', 'SUB_ADMIN', 'RESIDENT', 'GUARD'
+  residentType     String?  // 'OWNER', 'TENANT'
+  status           String   @default("PENDING") // 'PENDING', 'APPROVED', 'REJECTED'
+  societyId        String?
+  unitId           String?
+  avatarUrl        String?
+  emergencyContact String?
+  society          Society? @relation("SocietyUsers", fields: [societyId], references: [id], onDelete: SetNull)
+  unit             Unit?    @relation("UnitUsers", fields: [unitId], references: [id], onDelete: SetNull)
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
 

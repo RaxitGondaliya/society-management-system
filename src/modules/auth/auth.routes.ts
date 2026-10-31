@@ -1,7 +1,9 @@
 import { Router } from "express";
 import { validate } from "../../middleware/validate.middleware";
-import { authenticate } from "../../middleware/auth.middleware";
+import { authenticate, authenticateToken } from "../../middleware/auth.middleware";
 import * as authController from "./auth.controller";
+import * as userController from "../users/user.controller";
+import { updateMyProfileSchema } from "../users/user.validation";
 import {
   loginSchema,
   registerOtpSchema,
@@ -96,8 +98,32 @@ router.post(
  */
 router.get(
   "/me",
-  authenticate,
+  authenticateToken,
   authController.getMe
+);
+
+/**
+ * @route   PUT /api/v1/auth/me
+ * @desc    Update active profile of the authenticated user (alias for PUT /api/v1/users/me)
+ * @access  Protected
+ */
+router.put(
+  "/me",
+  authenticateToken,
+  validate({ body: updateMyProfileSchema }),
+  userController.updateCurrentUser
+);
+
+/**
+ * @route   PATCH /api/v1/auth/me
+ * @desc    Update active profile of the authenticated user (alias for PATCH /api/v1/users/me)
+ * @access  Protected
+ */
+router.patch(
+  "/me",
+  authenticateToken,
+  validate({ body: updateMyProfileSchema }),
+  userController.updateCurrentUser
 );
 
 export default router;

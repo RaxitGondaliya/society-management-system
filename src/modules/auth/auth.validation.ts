@@ -202,11 +202,23 @@ export const registerUserSchema = z
       .trim()
       .length(6, "Verification code must be exactly 6 digits")
       .regex(/^\d{6}$/, "Verification code must consist of 6 numeric digits"),
-    role: z.enum(["SUPER_ADMIN", "SUB_ADMIN", "RESIDENT", "GUARD"]).optional(),
+    role: z
+      .enum([
+        "SUPER_ADMIN",
+        "SOCIETY_ADMIN",
+        "SUB_ADMIN",
+        "COMMITTEE",
+        "RESIDENT",
+        "GUARD",
+        "SECURITY",
+      ])
+      .optional(),
     societyId: z.string().trim().optional().nullable(),
     societyCode: z.string().trim().optional().nullable(),
     unitId: z.string().trim().optional().nullable(),
     memberType: z.enum(["OWNER", "TENANT"]).optional(),
+    residentType: z.enum(["OWNER", "TENANT"]).optional(),
+    emergencyContact: z.string().trim().optional().nullable(),
     email: z
       .string()
       .trim()

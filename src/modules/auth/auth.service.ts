@@ -25,6 +25,12 @@ export interface SafeUserProfile {
   fullName: string;
   name?: string;
   role: string;
+  status?: string;
+  residentType?: string | null;
+  societyId?: string | null;
+  unitId?: string | null;
+  avatarUrl?: string | null;
+  emergencyContact?: string | null;
   isActive: boolean;
   phoneVerified?: boolean;
   createdAt: Date;
@@ -153,14 +159,40 @@ const resolvePrimaryAssociation = (unitMembers: any[]) => {
  * Generate session result with token for a user
  */
 const buildAuthResult = (user: any): AuthSuccessResult => {
-  const { primarySocietyId, primaryUnitId } = resolvePrimaryAssociation(user.unitMembers || []);
+  const unitMembers = Array.isArray(user.unitMembers) ? user.unitMembers : [];
+  const { primarySocietyId, primaryUnitId } = resolvePrimaryAssociation(unitMembers);
+  const approvedMembership = unitMembers.find(
+    (m: any) => m.approvalStatus === "APPROVED"
+  );
+  const primaryMembership = approvedMembership || unitMembers[0] || null;
+
+  const isAdminOrGuard = [
+    "SUPER_ADMIN",
+    "SOCIETY_ADMIN",
+    "SUB_ADMIN",
+    "COMMITTEE",
+    "GUARD",
+    "SECURITY",
+  ].includes((user.role || "").toUpperCase());
+
+  const effectiveStatus = isAdminOrGuard
+    ? "APPROVED"
+    : approvedMembership
+    ? "APPROVED"
+    : user.status || primaryMembership?.approvalStatus || "PENDING";
+
+  const effectiveSocietyId = user.societyId || primarySocietyId || undefined;
+  const effectiveUnitId = user.unitId || primaryUnitId || undefined;
+  const effectiveResidentType =
+    user.residentType || primaryMembership?.memberType || null;
+
   const token = generateToken({
     id: user.id,
     phone: user.phone,
     email: user.email,
     role: user.role,
-    societyId: primarySocietyId,
-    unitId: primaryUnitId,
+    societyId: effectiveSocietyId,
+    unitId: effectiveUnitId,
   });
 
   return {
@@ -168,15 +200,23 @@ const buildAuthResult = (user: any): AuthSuccessResult => {
       id: user.id,
       phone: user.phone,
       email: user.email,
+      name: user.fullName,
       fullName: user.fullName,
       role: user.role,
+      status: effectiveStatus,
+      residentType: effectiveResidentType,
+      societyId: effectiveSocietyId || null,
+      unitId: effectiveUnitId || null,
+      avatarUrl: user.avatarUrl || null,
+      emergencyContact: user.emergencyContact || null,
       isActive: user.isActive,
+      phoneVerified: true,
       createdAt: user.createdAt,
     },
     token,
-    primarySocietyId,
-    primaryUnitId,
-    memberships: formatMemberships(user.unitMembers || []),
+    primarySocietyId: effectiveSocietyId,
+    primaryUnitId: effectiveUnitId,
+    memberships: formatMemberships(unitMembers),
   };
 };
 
@@ -454,21 +494,31 @@ export const loginUser = async (payload: LoginInput): Promise<AuthSuccessResult>
  * 4. Fetch authenticated user's active profile and society associations
  */
 export const getCurrentUser = async (userId: string): Promise<AuthSuccessResult> => {
-  const user = await executeResilientPrismaQuery(() =>
-    prisma.user.findUnique({
-      where: { id: userId },
-      select: {
-        id: true,
-        phone: true,
-        email: true,
-        fullName: true,
-        role: true,
-        isActive: true,
-        createdAt: true,
-        unitMembers: userMembershipInclude.unitMembers,
-      },
-    })
-  );
+  let user: any = null;
+  try {
+    user = await executeResilientPrismaQuery(() =>
+      prisma.user.findUnique({
+        where: { id: userId },
+        include: userMembershipInclude,
+      })
+    );
+  } catch {
+    user = await executeResilientPrismaQuery(() =>
+      prisma.user.findUnique({
+        where: { id: userId },
+        select: {
+          id: true,
+          phone: true,
+          email: true,
+          fullName: true,
+          role: true,
+          isActive: true,
+          createdAt: true,
+          unitMembers: userMembershipInclude.unitMembers,
+        },
+      })
+    );
+  }
 
   if (!user) {
     throw new AppError(404, "User profile not found.");
@@ -478,22 +528,10 @@ export const getCurrentUser = async (userId: string): Promise<AuthSuccessResult>
     throw new AppError(403, "User account is deactivated. Access revoked.");
   }
 
-  const { primarySocietyId, primaryUnitId } = resolvePrimaryAssociation(user.unitMembers || []);
-
+  const built = buildAuthResult(user);
   return {
-    user: {
-      id: user.id,
-      phone: user.phone,
-      email: user.email,
-      fullName: user.fullName,
-      role: user.role,
-      isActive: user.isActive,
-      createdAt: user.createdAt,
-    },
+    ...built,
     token: "", // not re-issuing on /me
-    primarySocietyId,
-    primaryUnitId,
-    memberships: formatMemberships(user.unitMembers || []),
   };
 };
 
@@ -703,21 +741,51 @@ export const registerUserWithOtp = async (
   }
 
   // 4. Create user (and optional unit membership) in PostgreSQL
+  const isAdminOrGuardRole = [
+    "SUPER_ADMIN",
+    "SOCIETY_ADMIN",
+    "SUB_ADMIN",
+    "COMMITTEE",
+    "GUARD",
+    "SECURITY",
+  ].includes((resolvedRole || "").toUpperCase());
+  const initialStatus = isAdminOrGuardRole ? "APPROVED" : "PENDING";
+  const initialResidentType =
+    payload.residentType || payload.memberType || (resolvedRole === "RESIDENT" ? "OWNER" : null);
+
   const createdUser = await prisma.$transaction(async (tx) => {
-    const newUser = await tx.user.create({
-      data: {
-        fullName: resolvedName,
-        phone: normalizedPhone,
-        email: normalizedEmail,
-        role: resolvedRole,
-        isActive: true,
-      },
-    });
+    let newUser: any;
+    try {
+      newUser = await tx.user.create({
+        data: {
+          fullName: resolvedName,
+          phone: normalizedPhone,
+          email: normalizedEmail,
+          role: resolvedRole,
+          status: initialStatus,
+          residentType: initialResidentType,
+          societyId: payload.societyId || null,
+          unitId: payload.unitId || null,
+          emergencyContact: payload.emergencyContact || null,
+          isActive: true,
+        },
+      });
+    } catch {
+      newUser = await tx.user.create({
+        data: {
+          fullName: resolvedName,
+          phone: normalizedPhone,
+          email: normalizedEmail,
+          role: resolvedRole,
+          isActive: true,
+        },
+      });
+    }
 
     if (payload.unitId) {
       const targetUnit = await tx.unit.findUnique({
         where: { id: payload.unitId },
-        select: { id: true },
+        select: { id: true, societyId: true },
       });
 
       if (targetUnit) {
@@ -725,9 +793,9 @@ export const registerUserWithOtp = async (
           data: {
             unitId: targetUnit.id,
             userId: newUser.id,
-            memberType: payload.memberType || "OWNER",
-            isPrimaryHead: resolvedRole === "SUPER_ADMIN",
-            approvalStatus: resolvedRole === "SUPER_ADMIN" ? "APPROVED" : "PENDING",
+            memberType: initialResidentType || "OWNER",
+            isPrimaryHead: isAdminOrGuardRole,
+            approvalStatus: initialStatus,
           },
         });
       }

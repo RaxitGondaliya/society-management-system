@@ -1,4 +1,4 @@
-import { prisma } from "../../config/prisma";
+import { prisma, executeResilientPrismaQuery } from "../../config/prisma";
 import { AppError } from "../../utils/apiResponse";
 import { generateToken } from "../../utils/jwt";
 import { sanitizeMobileNumber } from "../../utils/sms.service";
@@ -7,6 +7,8 @@ import {
   JoinSocietyInput,
   ApprovalDecisionInput,
   UpdateOccupancyInput,
+  UpdateMyProfileInput,
+  AdminUpdateUserStatusInput,
 } from "./user.validation";
 
 /**
@@ -130,15 +132,44 @@ export const requestToJoinSociety = async (payload: JoinSocietyInput) => {
         }
       }
 
-      user = await tx.user.create({
-        data: {
-          fullName: payload.fullName,
-          phone: payload.phone,
-          email: payload.email || null,
-          role: "RESIDENT",
-          isActive: true,
-        },
-      });
+      try {
+        user = await tx.user.create({
+          data: {
+            fullName: payload.fullName,
+            phone: payload.phone,
+            email: payload.email || null,
+            role: "RESIDENT",
+            residentType: payload.memberType,
+            status: "PENDING",
+            societyId: society.id,
+            unitId: unit.id,
+            isActive: true,
+          },
+        });
+      } catch {
+        user = await tx.user.create({
+          data: {
+            fullName: payload.fullName,
+            phone: payload.phone,
+            email: payload.email || null,
+            role: "RESIDENT",
+            isActive: true,
+          },
+        });
+      }
+    } else {
+      try {
+        user = await tx.user.update({
+          where: { id: user.id },
+          data: {
+            residentType: payload.memberType,
+            societyId: society.id,
+            unitId: unit.id,
+          },
+        });
+      } catch {
+        // Ignore if optional columns are not yet migrated
+      }
     }
 
     // Create pending UnitMember record
@@ -199,6 +230,10 @@ export const requestToJoinSociety = async (payload: JoinSocietyInput) => {
         phone: user.phone,
         email: user.email,
         role: user.role,
+        status: "PENDING",
+        residentType: payload.memberType,
+        societyId: society.id,
+        unitId: unit.id,
       },
       submittedAt: membership.createdAt,
     };
@@ -209,63 +244,365 @@ export const requestToJoinSociety = async (payload: JoinSocietyInput) => {
 };
 
 /**
- * Retrieve pending join requests scoped to a society
+ * Fetch current logged-in user profile, role, status, society details, and associated unit
+ * GET /api/v1/users/me
  */
-export const getPendingApprovals = async (societyId: string) => {
-  const pendingRequests = await prisma.unitMember.findMany({
-    where: {
-      approvalStatus: "PENDING",
-      unit: {
-        societyId,
-      },
-    },
-    include: {
-      user: {
-        select: {
-          id: true,
-          fullName: true,
-          phone: true,
-          email: true,
-          role: true,
-          createdAt: true,
-        },
-      },
-      unit: {
-        select: {
-          id: true,
-          unitNumber: true,
-          floorNumber: true,
-          occupancyStatus: true,
-          sectionWing: {
+export const getMyProfile = async (userId: string) => {
+  let user: any = null;
+  try {
+    user = await executeResilientPrismaQuery(() =>
+      prisma.user.findUnique({
+        where: { id: userId },
+        include: {
+          society: {
             select: {
               id: true,
               name: true,
+              code: true,
+              propertyType: true,
+              address: true,
+              subscriptionPlan: true,
             },
           },
-          familyMembers: {
-            select: {
-              id: true,
-              fullName: true,
-              relation: true,
-              age: true,
-              phone: true,
-              isEmergencyContact: true,
+          unit: {
+            include: {
+              sectionWing: {
+                select: { id: true, name: true },
+              },
+              society: {
+                select: {
+                  id: true,
+                  name: true,
+                  code: true,
+                  propertyType: true,
+                  address: true,
+                },
+              },
+            },
+          },
+          unitMembers: {
+            include: {
+              unit: {
+                include: {
+                  sectionWing: {
+                    select: { id: true, name: true },
+                  },
+                  society: {
+                    select: {
+                      id: true,
+                      name: true,
+                      code: true,
+                      propertyType: true,
+                      address: true,
+                    },
+                  },
+                },
+              },
+            },
+            orderBy: [{ isPrimaryHead: "desc" }, { createdAt: "desc" }],
+          },
+        },
+      })
+    );
+  } catch {
+    user = await executeResilientPrismaQuery(() =>
+      prisma.user.findUnique({
+        where: { id: userId },
+        include: {
+          unitMembers: {
+            include: {
+              unit: {
+                include: {
+                  sectionWing: {
+                    select: { id: true, name: true },
+                  },
+                  society: {
+                    select: {
+                      id: true,
+                      name: true,
+                      code: true,
+                      propertyType: true,
+                      address: true,
+                    },
+                  },
+                },
+              },
+            },
+            orderBy: [{ isPrimaryHead: "desc" }, { createdAt: "desc" }],
+          },
+        },
+      })
+    );
+  }
+
+  if (!user) {
+    throw new AppError(404, "User profile not found.");
+  }
+
+  const memberships = Array.isArray(user.unitMembers) ? user.unitMembers : [];
+  const approvedMembership = memberships.find(
+    (m: any) => m.approvalStatus === "APPROVED"
+  );
+  const primaryMembership = approvedMembership || memberships[0] || null;
+
+  const isAdminOrGuard = [
+    "SUPER_ADMIN",
+    "SOCIETY_ADMIN",
+    "SUB_ADMIN",
+    "COMMITTEE",
+    "GUARD",
+    "SECURITY",
+  ].includes((user.role || "").toUpperCase());
+
+  const effectiveStatus = isAdminOrGuard
+    ? "APPROVED"
+    : approvedMembership
+    ? "APPROVED"
+    : user.status || primaryMembership?.approvalStatus || "PENDING";
+
+  const effectiveResidentType =
+    user.residentType || primaryMembership?.memberType || null;
+
+  const resolvedUnit = user.unit || primaryMembership?.unit || null;
+  const resolvedSociety =
+    user.society ||
+    resolvedUnit?.society ||
+    primaryMembership?.unit?.society ||
+    null;
+
+  return {
+    user: {
+      id: user.id,
+      phone: user.phone,
+      email: user.email,
+      name: user.fullName,
+      fullName: user.fullName,
+      role: user.role,
+      status: effectiveStatus,
+      residentType: effectiveResidentType,
+      societyId: user.societyId || resolvedSociety?.id || null,
+      unitId: user.unitId || resolvedUnit?.id || null,
+      avatarUrl: user.avatarUrl || null,
+      emergencyContact: user.emergencyContact || null,
+      isActive: user.isActive,
+      phoneVerified: true,
+      createdAt: user.createdAt,
+    },
+    society: resolvedSociety
+      ? {
+          id: resolvedSociety.id,
+          name: resolvedSociety.name,
+          code: resolvedSociety.code,
+          propertyType: resolvedSociety.propertyType,
+          address: resolvedSociety.address,
+        }
+      : null,
+    unit: resolvedUnit
+      ? {
+          id: resolvedUnit.id,
+          unitNumber: resolvedUnit.unitNumber,
+          floorNumber: resolvedUnit.floorNumber,
+          occupancyStatus: resolvedUnit.occupancyStatus,
+          sectionWingId: resolvedUnit.sectionWingId,
+          sectionWingName: resolvedUnit.sectionWing?.name || null,
+        }
+      : null,
+    primarySocietyId: user.societyId || resolvedSociety?.id || null,
+    primaryUnitId: user.unitId || resolvedUnit?.id || null,
+    memberships: memberships.map((m: any) => ({
+      id: m.id,
+      memberType: m.memberType,
+      isPrimaryHead: m.isPrimaryHead,
+      approvalStatus: m.approvalStatus,
+      unit: m.unit
+        ? {
+            id: m.unit.id,
+            unitNumber: m.unit.unitNumber,
+            floorNumber: m.unit.floorNumber,
+            occupancyStatus: m.unit.occupancyStatus,
+            sectionWingId: m.unit.sectionWingId,
+            sectionWingName: m.unit.sectionWing?.name,
+            societyId: m.unit.societyId,
+            societyName: m.unit.society?.name,
+            societyCode: m.unit.society?.code,
+            propertyType: m.unit.society?.propertyType,
+            address: m.unit.society?.address,
+          }
+        : null,
+    })),
+  };
+};
+
+/**
+ * Update personal profile info (name, residentType, emergencyContact, avatarUrl)
+ * PUT /api/v1/users/me
+ * SECURITY: Prevents privilege escalation (cannot modify role or approval status).
+ */
+export const updateMyProfile = async (
+  userId: string,
+  payload: UpdateMyProfileInput
+) => {
+  // Double-check against privilege escalation
+  if (payload.role !== undefined || payload.status !== undefined) {
+    throw new AppError(
+      403,
+      "Forbidden: You do not have permission to change your role or approval status."
+    );
+  }
+
+  const nextFullName = (payload.fullName || payload.name || "").trim();
+  const nextAvatarUrl =
+    payload.avatarUrl !== undefined
+      ? payload.avatarUrl?.trim() || null
+      : payload.avatar !== undefined
+      ? payload.avatar?.trim() || null
+      : undefined;
+  const nextEmergencyContact =
+    payload.emergencyContact !== undefined
+      ? payload.emergencyContact?.trim() || null
+      : undefined;
+  const nextResidentType =
+    payload.residentType !== undefined ? payload.residentType : undefined;
+  const nextEmail =
+    payload.email !== undefined
+      ? payload.email?.trim().toLowerCase() || null
+      : undefined;
+
+  if (nextEmail) {
+    const emailOwner = await executeResilientPrismaQuery(() =>
+      prisma.user.findFirst({
+        where: {
+          email: { equals: nextEmail, mode: "insensitive" },
+          NOT: { id: userId },
+        },
+        select: { id: true },
+      })
+    );
+    if (emailOwner) {
+      throw new AppError(409, "Email address is already in use by another account.");
+    }
+  }
+
+  try {
+    await executeResilientPrismaQuery(() =>
+      prisma.user.update({
+        where: { id: userId },
+        data: {
+          ...(nextFullName ? { fullName: nextFullName } : {}),
+          ...(nextEmail !== undefined ? { email: nextEmail } : {}),
+          ...(nextResidentType !== undefined ? { residentType: nextResidentType } : {}),
+          ...(nextEmergencyContact !== undefined
+            ? { emergencyContact: nextEmergencyContact }
+            : {}),
+          ...(nextAvatarUrl !== undefined ? { avatarUrl: nextAvatarUrl } : {}),
+        },
+      })
+    );
+  } catch {
+    // Fallback if optional columns are not yet pushed to DB
+    await executeResilientPrismaQuery(() =>
+      prisma.user.update({
+        where: { id: userId },
+        data: {
+          ...(nextFullName ? { fullName: nextFullName } : {}),
+          ...(nextEmail !== undefined ? { email: nextEmail } : {}),
+        },
+      })
+    );
+  }
+
+  // Sync residentType (OWNER / TENANT) to primary UnitMember record if present
+  if (nextResidentType) {
+    const primaryMembership = await executeResilientPrismaQuery(() =>
+      prisma.unitMember.findFirst({
+        where: { userId },
+        orderBy: [{ isPrimaryHead: "desc" }, { createdAt: "desc" }],
+      })
+    );
+    if (primaryMembership) {
+      await executeResilientPrismaQuery(() =>
+        prisma.unitMember.update({
+          where: { id: primaryMembership.id },
+          data: { memberType: nextResidentType },
+        })
+      );
+    }
+  }
+
+  return await getMyProfile(userId);
+};
+
+/**
+ * Retrieve pending join requests and pending resident onboarding accounts scoped to a society
+ */
+export const getPendingApprovals = async (societyId?: string) => {
+  const pendingRequests = await executeResilientPrismaQuery(() =>
+    prisma.unitMember.findMany({
+      where: {
+        approvalStatus: "PENDING",
+        ...(societyId
+          ? {
+              unit: {
+                societyId,
+              },
+            }
+          : {}),
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            phone: true,
+            email: true,
+            role: true,
+            createdAt: true,
+          },
+        },
+        unit: {
+          select: {
+            id: true,
+            unitNumber: true,
+            floorNumber: true,
+            occupancyStatus: true,
+            sectionWing: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+            familyMembers: {
+              select: {
+                id: true,
+                fullName: true,
+                relation: true,
+                age: true,
+                phone: true,
+                isEmergencyContact: true,
+              },
             },
           },
         },
       },
-    },
-    orderBy: {
-      createdAt: "asc",
-    },
-  });
+      orderBy: {
+        createdAt: "asc",
+      },
+    })
+  );
 
-  return pendingRequests.map((req) => ({
+  const mappedUnitRequests = (pendingRequests || []).map((req) => ({
+    id: req.user.id,
     membershipId: req.id,
     memberType: req.memberType,
+    residentType: req.memberType,
     approvalStatus: req.approvalStatus,
+    status: req.approvalStatus,
     createdAt: req.createdAt,
-    user: req.user,
+    user: {
+      ...req.user,
+      status: "PENDING",
+      residentType: req.memberType,
+    },
     unit: {
       id: req.unit.id,
       unitNumber: req.unit.unitNumber,
@@ -275,6 +612,77 @@ export const getPendingApprovals = async (societyId: string) => {
     },
     familyMembers: req.unit.familyMembers,
   }));
+
+  // Also include standalone User records with status === 'PENDING' that have no pending UnitMember row yet
+  try {
+    const existingUserIds = new Set(mappedUnitRequests.map((r) => r.user.id));
+    const pendingUsers = await executeResilientPrismaQuery(() =>
+      prisma.user.findMany({
+        where: {
+          status: "PENDING",
+          role: "RESIDENT",
+          ...(societyId
+            ? {
+                OR: [{ societyId }, { societyId: null }],
+              }
+            : {}),
+        },
+        include: {
+          unit: {
+            include: {
+              sectionWing: { select: { id: true, name: true } },
+              familyMembers: true,
+            },
+          },
+        },
+        orderBy: { createdAt: "asc" },
+      })
+    );
+
+    for (const u of pendingUsers || []) {
+      if (!existingUserIds.has(u.id)) {
+        mappedUnitRequests.push({
+          id: u.id,
+          membershipId: u.id,
+          memberType: u.residentType || "OWNER",
+          residentType: u.residentType || "OWNER",
+          approvalStatus: "PENDING",
+          status: "PENDING",
+          createdAt: u.createdAt,
+          user: {
+            id: u.id,
+            fullName: u.fullName,
+            phone: u.phone,
+            email: u.email,
+            role: u.role,
+            createdAt: u.createdAt,
+            status: u.status || "PENDING",
+            residentType: u.residentType || "OWNER",
+          },
+          unit: u.unit
+            ? {
+                id: u.unit.id,
+                unitNumber: u.unit.unitNumber,
+                floorNumber: u.unit.floorNumber,
+                occupancyStatus: u.unit.occupancyStatus,
+                sectionWing: u.unit.sectionWing,
+              }
+            : ({
+                id: "",
+                unitNumber: "Unassigned",
+                floorNumber: null,
+                occupancyStatus: "VACANT",
+                sectionWing: { id: "", name: "Pending Unit Assignment" },
+              } as any),
+          familyMembers: u.unit?.familyMembers || [],
+        });
+      }
+    }
+  } catch {
+    // Ignore if optional User.status column is not yet migrated
+  }
+
+  return mappedUnitRequests;
 };
 
 /**
@@ -342,6 +750,21 @@ export const reviewJoinRequest = async (
         },
       });
 
+      // Update User status and association
+      try {
+        await tx.user.update({
+          where: { id: membership.userId },
+          data: {
+            status: "APPROVED",
+            residentType: membership.memberType,
+            societyId: membership.unit.societyId,
+            unitId: membership.unitId,
+          },
+        });
+      } catch {
+        // Fallback if optional columns not yet pushed
+      }
+
       // Update Unit occupancyStatus
       const newOccupancyStatus =
         membership.memberType === "OWNER" ? "OCCUPIED_OWNER" : "OCCUPIED_TENANT";
@@ -357,6 +780,7 @@ export const reviewJoinRequest = async (
         message: "Resident join request approved successfully.",
         membershipId: updatedMembership.id,
         approvalStatus: updatedMembership.approvalStatus,
+        status: updatedMembership.approvalStatus,
         isPrimaryHead: updatedMembership.isPrimaryHead,
         unit: {
           id: membership.unit.id,
@@ -364,7 +788,11 @@ export const reviewJoinRequest = async (
           occupancyStatus: newOccupancyStatus,
           sectionWing: membership.unit.sectionWing.name,
         },
-        user: membership.user,
+        user: {
+          ...membership.user,
+          status: "APPROVED",
+          residentType: membership.memberType,
+        },
       };
     } else {
       // REJECTED
@@ -377,20 +805,168 @@ export const reviewJoinRequest = async (
         },
       });
 
+      try {
+        await tx.user.update({
+          where: { id: membership.userId },
+          data: {
+            status: "REJECTED",
+          },
+        });
+      } catch {
+        // Fallback if optional columns not yet pushed
+      }
+
       return {
         message: "Resident join request rejected.",
         membershipId: updatedMembership.id,
         approvalStatus: updatedMembership.approvalStatus,
+        status: updatedMembership.approvalStatus,
         rejectionReason: updatedMembership.deactivationReason,
         unit: {
           id: membership.unit.id,
           unitNumber: membership.unit.unitNumber,
           sectionWing: membership.unit.sectionWing.name,
         },
-        user: membership.user,
+        user: {
+          ...membership.user,
+          status: "REJECTED",
+        },
       };
     }
   });
+};
+
+/**
+ * Admin: Approve or reject a resident onboarding request by userId or membershipId
+ * PATCH /api/v1/admin/users/:id/status
+ */
+export const adminUpdateUserStatus = async (
+  targetId: string,
+  decision: AdminUpdateUserStatusInput,
+  adminSocietyId?: string
+) => {
+  // 1. Check if targetId matches a UnitMember record directly
+  const existingMembership = await executeResilientPrismaQuery(() =>
+    prisma.unitMember.findUnique({
+      where: { id: targetId },
+      select: { id: true, approvalStatus: true },
+    })
+  );
+
+  if (existingMembership && existingMembership.approvalStatus === "PENDING" && (decision.status === "APPROVED" || decision.status === "REJECTED")) {
+    return await reviewJoinRequest(
+      existingMembership.id,
+      {
+        status: decision.status,
+        rejectionReason: decision.rejectionReason,
+      },
+      adminSocietyId
+    );
+  }
+
+  // 2. Otherwise resolve targetId as a User ID
+  const user = await executeResilientPrismaQuery(() =>
+    prisma.user.findUnique({
+      where: { id: targetId },
+      include: {
+        unitMembers: {
+          orderBy: { createdAt: "desc" },
+          include: {
+            unit: {
+              include: {
+                sectionWing: { select: { id: true, name: true } },
+              },
+            },
+          },
+        },
+      },
+    })
+  );
+
+  if (!user) {
+    throw new AppError(404, "Resident user or onboarding request not found.");
+  }
+
+  const pendingMembership = user.unitMembers.find(
+    (m) => m.approvalStatus === "PENDING"
+  );
+
+  if (
+    pendingMembership &&
+    (decision.status === "APPROVED" || decision.status === "REJECTED")
+  ) {
+    const res = await reviewJoinRequest(
+      pendingMembership.id,
+      {
+        status: decision.status,
+        rejectionReason: decision.rejectionReason,
+      },
+      adminSocietyId
+    );
+
+    if (decision.role || decision.residentType) {
+      try {
+        await executeResilientPrismaQuery(() =>
+          prisma.user.update({
+            where: { id: user.id },
+            data: {
+              ...(decision.role ? { role: decision.role } : {}),
+              ...(decision.residentType
+                ? { residentType: decision.residentType }
+                : {}),
+            },
+          })
+        );
+      } catch {
+        // Ignore if optional column is migrating
+      }
+    }
+
+    return res;
+  }
+
+  // 3. Update User status/role directly (e.g., standalone resident signup without unitMember yet)
+  let updatedUser: any = user;
+  try {
+    updatedUser = await executeResilientPrismaQuery(() =>
+      prisma.user.update({
+        where: { id: user.id },
+        data: {
+          status: decision.status,
+          ...(decision.role ? { role: decision.role } : {}),
+          ...(decision.residentType !== undefined
+            ? { residentType: decision.residentType }
+            : {}),
+          ...(decision.unitId !== undefined ? { unitId: decision.unitId } : {}),
+          ...(adminSocietyId ? { societyId: adminSocietyId } : {}),
+        },
+      })
+    );
+  } catch {
+    if (decision.role) {
+      updatedUser = await executeResilientPrismaQuery(() =>
+        prisma.user.update({
+          where: { id: user.id },
+          data: { role: decision.role },
+        })
+      );
+    }
+  }
+
+  return {
+    message: `User onboarding status updated to ${decision.status}.`,
+    status: decision.status,
+    approvalStatus: decision.status,
+    user: {
+      id: updatedUser.id,
+      fullName: updatedUser.fullName,
+      phone: updatedUser.phone,
+      email: updatedUser.email,
+      role: updatedUser.role,
+      status: decision.status,
+      residentType: updatedUser.residentType || decision.residentType || null,
+    },
+  };
 };
 
 /**
