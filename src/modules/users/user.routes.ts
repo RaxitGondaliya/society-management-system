@@ -121,7 +121,7 @@ router.get(
 router.patch(
   "/units/:unitId/occupancy",
   authenticate,
-  isAdmin,
+  authorizeRoles("SUPER_ADMIN", "SOCIETY_ADMIN"),
   validate({
     params: unitIdParamSchema,
     body: updateOccupancySchema,

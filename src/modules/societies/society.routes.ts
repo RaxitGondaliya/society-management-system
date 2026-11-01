@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { validate } from "../../middleware/validate.middleware";
 import { authenticateToken } from "../../middleware/auth.middleware";
-import { isAdmin } from "../../middlewares/rbac.middleware";
+import { authorizeRoles } from "../../middlewares/rbac.middleware";
 import * as societyController from "./society.controller";
 import {
   registerSocietySchema,
@@ -15,6 +15,7 @@ import {
 } from "./society.validation";
 
 const router = Router();
+const adminGuard = authorizeRoles("SUPER_ADMIN", "SOCIETY_ADMIN");
 
 /**
  * @route   GET /api/v1/societies
@@ -66,37 +67,63 @@ router.get(
 /**
  * @route   GET /api/v1/societies/my-structure
  * @desc    Fetch complete society structure (wings & units) for Admin management
- * @access  Protected (Admin)
+ * @access  Protected (SUPER_ADMIN, SOCIETY_ADMIN)
  */
 router.get(
   "/my-structure",
   authenticateToken,
-  isAdmin,
+  adminGuard,
   societyController.getMyStructure
 );
 
 /**
- * @route   POST /api/v1/societies/wings
- * @desc    Create a new Wing / Tower / Block
- * @access  Protected (Admin)
+ * @route   POST /api/v1/societies/:id/wings
+ * @desc    Create a new Wing / Tower / Block for society :id
+ * @access  Protected (SUPER_ADMIN, SOCIETY_ADMIN)
  */
 router.post(
-  "/wings",
+  "/:id/wings",
   authenticateToken,
-  isAdmin,
+  adminGuard,
   validate({ body: createWingSchema }),
   societyController.createWing
 );
 
 /**
+ * @route   POST /api/v1/societies/wings
+ * @desc    Create a new Wing / Tower / Block
+ * @access  Protected (SUPER_ADMIN, SOCIETY_ADMIN)
+ */
+router.post(
+  "/wings",
+  authenticateToken,
+  adminGuard,
+  validate({ body: createWingSchema }),
+  societyController.createWing
+);
+
+/**
+ * @route   POST /api/v1/societies/wings/:wingId/units
+ * @desc    Create a new Unit / Flat / House in wing :wingId
+ * @access  Protected (SUPER_ADMIN, SOCIETY_ADMIN)
+ */
+router.post(
+  "/wings/:wingId/units",
+  authenticateToken,
+  adminGuard,
+  validate({ body: createUnitSchema }),
+  societyController.createUnit
+);
+
+/**
  * @route   PUT /api/v1/societies/wings/:wingId
  * @desc    Update an existing Wing / Tower / Block
- * @access  Protected (Admin)
+ * @access  Protected (SUPER_ADMIN, SOCIETY_ADMIN)
  */
 router.put(
   "/wings/:wingId",
   authenticateToken,
-  isAdmin,
+  adminGuard,
   validate({ params: wingIdParamSchema, body: updateWingSchema }),
   societyController.updateWing
 );
@@ -104,12 +131,12 @@ router.put(
 /**
  * @route   PATCH /api/v1/societies/wings/:wingId
  * @desc    Update an existing Wing / Tower / Block (PATCH alias)
- * @access  Protected (Admin)
+ * @access  Protected (SUPER_ADMIN, SOCIETY_ADMIN)
  */
 router.patch(
   "/wings/:wingId",
   authenticateToken,
-  isAdmin,
+  adminGuard,
   validate({ params: wingIdParamSchema, body: updateWingSchema }),
   societyController.updateWing
 );
@@ -117,12 +144,12 @@ router.patch(
 /**
  * @route   DELETE /api/v1/societies/wings/:wingId
  * @desc    Delete a Wing / Tower / Block and its units
- * @access  Protected (Admin)
+ * @access  Protected (SUPER_ADMIN, SOCIETY_ADMIN)
  */
 router.delete(
   "/wings/:wingId",
   authenticateToken,
-  isAdmin,
+  adminGuard,
   validate({ params: wingIdParamSchema }),
   societyController.deleteWing
 );
@@ -130,12 +157,12 @@ router.delete(
 /**
  * @route   POST /api/v1/societies/units
  * @desc    Create a new Unit / Flat / House
- * @access  Protected (Admin)
+ * @access  Protected (SUPER_ADMIN, SOCIETY_ADMIN)
  */
 router.post(
   "/units",
   authenticateToken,
-  isAdmin,
+  adminGuard,
   validate({ body: createUnitSchema }),
   societyController.createUnit
 );
@@ -143,12 +170,12 @@ router.post(
 /**
  * @route   PUT /api/v1/societies/units/:unitId
  * @desc    Update an existing Unit / Flat / House
- * @access  Protected (Admin)
+ * @access  Protected (SUPER_ADMIN, SOCIETY_ADMIN)
  */
 router.put(
   "/units/:unitId",
   authenticateToken,
-  isAdmin,
+  adminGuard,
   validate({ params: societyUnitIdParamSchema, body: updateUnitSchema }),
   societyController.updateUnit
 );
@@ -156,12 +183,12 @@ router.put(
 /**
  * @route   PATCH /api/v1/societies/units/:unitId
  * @desc    Update an existing Unit / Flat / House (PATCH alias)
- * @access  Protected (Admin)
+ * @access  Protected (SUPER_ADMIN, SOCIETY_ADMIN)
  */
 router.patch(
   "/units/:unitId",
   authenticateToken,
-  isAdmin,
+  adminGuard,
   validate({ params: societyUnitIdParamSchema, body: updateUnitSchema }),
   societyController.updateUnit
 );
@@ -169,12 +196,65 @@ router.patch(
 /**
  * @route   DELETE /api/v1/societies/units/:unitId
  * @desc    Delete a Unit / Flat / House
- * @access  Protected (Admin)
+ * @access  Protected (SUPER_ADMIN, SOCIETY_ADMIN)
  */
 router.delete(
   "/units/:unitId",
   authenticateToken,
-  isAdmin,
+  adminGuard,
+  validate({ params: societyUnitIdParamSchema }),
+  societyController.deleteUnit
+);
+
+export const wingsRouter = Router();
+wingsRouter.post(
+  "/:wingId/units",
+  authenticateToken,
+  adminGuard,
+  validate({ body: createUnitSchema }),
+  societyController.createUnit
+);
+wingsRouter.put(
+  "/:id",
+  authenticateToken,
+  adminGuard,
+  validate({ params: wingIdParamSchema, body: updateWingSchema }),
+  societyController.updateWing
+);
+wingsRouter.patch(
+  "/:id",
+  authenticateToken,
+  adminGuard,
+  validate({ params: wingIdParamSchema, body: updateWingSchema }),
+  societyController.updateWing
+);
+wingsRouter.delete(
+  "/:id",
+  authenticateToken,
+  adminGuard,
+  validate({ params: wingIdParamSchema }),
+  societyController.deleteWing
+);
+
+export const unitsRouter = Router();
+unitsRouter.put(
+  "/:id",
+  authenticateToken,
+  adminGuard,
+  validate({ params: societyUnitIdParamSchema, body: updateUnitSchema }),
+  societyController.updateUnit
+);
+unitsRouter.patch(
+  "/:id",
+  authenticateToken,
+  adminGuard,
+  validate({ params: societyUnitIdParamSchema, body: updateUnitSchema }),
+  societyController.updateUnit
+);
+unitsRouter.delete(
+  "/:id",
+  authenticateToken,
+  adminGuard,
   validate({ params: societyUnitIdParamSchema }),
   societyController.deleteUnit
 );

@@ -683,17 +683,43 @@ export const updateWing = async (
 
 /**
  * Delete a Wing / Tower / Block and its units
+ * Blocks deletion if any unit inside the wing is currently occupied.
  */
 export const deleteWing = async (societyId: string, wingId: string) => {
   const wing = await executeResilientPrismaQuery(() =>
     prisma.sectionWing.findUnique({
       where: { id: wingId },
-      include: { units: { select: { id: true } } },
+      include: {
+        units: {
+          select: {
+            id: true,
+            unitNumber: true,
+            occupancyStatus: true,
+            members: {
+              where: { approvalStatus: "APPROVED" },
+              select: { id: true },
+            },
+          },
+        },
+      },
     })
   );
 
   if (!wing || wing.societyId !== societyId) {
     throw new AppError(404, "Wing / Tower not found in your society.");
+  }
+
+  const hasOccupiedUnit = wing.units.some(
+    (u) =>
+      (u.occupancyStatus && u.occupancyStatus !== "VACANT") ||
+      (Array.isArray(u.members) && u.members.length > 0)
+  );
+
+  if (hasOccupiedUnit) {
+    throw new AppError(
+      400,
+      "Cannot delete an occupied unit. Please unassign or relocate the resident first."
+    );
   }
 
   const unitIds = wing.units.map((u) => u.id);
@@ -714,23 +740,29 @@ export const deleteWing = async (societyId: string, wingId: string) => {
  * Create a new Unit / Flat / House in a Wing
  */
 export const createUnit = async (societyId: string, payload: CreateUnitInput) => {
+  const resolvedWingId = (payload.sectionWingId || payload.wingId || "").trim();
+  if (!resolvedWingId) {
+    throw new AppError(400, "Wing / Tower ID is required to create a unit.");
+  }
+
   const wing = await executeResilientPrismaQuery(() =>
     prisma.sectionWing.findUnique({
-      where: { id: payload.sectionWingId },
+      where: { id: resolvedWingId },
     })
   );
 
-  if (!wing || wing.societyId !== societyId) {
+  if (!wing || (societyId && wing.societyId !== societyId)) {
     throw new AppError(404, "Target Wing / Tower not found in your society.");
   }
 
+  const effectiveSocietyId = wing.societyId || societyId;
   const cleanUnitNumber = payload.unitNumber.trim();
 
   const duplicate = await executeResilientPrismaQuery(() =>
     prisma.unit.findFirst({
       where: {
-        societyId,
-        sectionWingId: payload.sectionWingId,
+        societyId: effectiveSocietyId,
+        sectionWingId: resolvedWingId,
         unitNumber: { equals: cleanUnitNumber, mode: "insensitive" },
       },
     })
@@ -746,8 +778,8 @@ export const createUnit = async (societyId: string, payload: CreateUnitInput) =>
   const unit = await executeResilientPrismaQuery(() =>
     prisma.unit.create({
       data: {
-        societyId,
-        sectionWingId: payload.sectionWingId,
+        societyId: effectiveSocietyId,
+        sectionWingId: resolvedWingId,
         unitNumber: cleanUnitNumber,
         floorNumber: payload.floorNumber ?? 1,
         occupancyStatus: payload.occupancyStatus || "VACANT",
@@ -813,16 +845,34 @@ export const updateUnit = async (
 
 /**
  * Delete a Unit / Flat / House
+ * Blocks deletion if the unit is currently occupied.
  */
 export const deleteUnit = async (societyId: string, unitId: string) => {
   const unit = await executeResilientPrismaQuery(() =>
     prisma.unit.findUnique({
       where: { id: unitId },
+      include: {
+        members: {
+          where: { approvalStatus: "APPROVED" },
+          select: { id: true },
+        },
+      },
     })
   );
 
-  if (!unit || unit.societyId !== societyId) {
+  if (!unit || (societyId && unit.societyId !== societyId)) {
     throw new AppError(404, "Unit / Flat not found in your society.");
+  }
+
+  const isOccupied =
+    (unit.occupancyStatus && unit.occupancyStatus !== "VACANT") ||
+    (Array.isArray(unit.members) && unit.members.length > 0);
+
+  if (isOccupied) {
+    throw new AppError(
+      400,
+      "Cannot delete an occupied unit. Please unassign or relocate the resident first."
+    );
   }
 
   await prisma.$transaction(async (tx) => {

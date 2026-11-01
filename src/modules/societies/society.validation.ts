@@ -174,7 +174,7 @@ export const createWingSchema = z.object({
     .trim()
     .min(1, "Wing/Tower/Block name cannot be empty")
     .max(100, "Wing/Tower/Block name cannot exceed 100 characters"),
-  societyId: z.string().trim().uuid().optional(),
+  societyId: z.string().trim().optional().nullable(),
 });
 
 export const updateWingSchema = z.object({
@@ -183,17 +183,21 @@ export const updateWingSchema = z.object({
     .trim()
     .min(1, "Wing/Tower/Block name cannot be empty")
     .max(100, "Wing/Tower/Block name cannot exceed 100 characters"),
+  societyId: z.string().trim().optional().nullable(),
 });
 
-export const wingIdParamSchema = z.object({
-  wingId: z.string({ error: "Wing ID is required" }).trim().uuid("Invalid Wing ID format"),
-});
+export const wingIdParamSchema = z
+  .object({
+    wingId: z.string().trim().optional(),
+    id: z.string().trim().optional(),
+  })
+  .refine((data) => Boolean(data.wingId || data.id), {
+    message: "Wing ID is required",
+  });
 
 export const createUnitSchema = z.object({
-  sectionWingId: z
-    .string({ error: "Wing/Tower ID is required" })
-    .trim()
-    .uuid("Invalid Wing/Tower ID format"),
+  sectionWingId: z.string().trim().optional(),
+  wingId: z.string().trim().optional(),
   unitNumber: z
     .string({ error: "Unit/Flat/House number is required" })
     .trim()
@@ -204,11 +208,11 @@ export const createUnitSchema = z.object({
     .enum(["VACANT", "OCCUPIED_OWNER", "OCCUPIED_TENANT"] as const)
     .optional()
     .default("VACANT"),
-  societyId: z.string().trim().uuid().optional(),
+  societyId: z.string().trim().optional().nullable(),
 });
 
 export const updateUnitSchema = z.object({
-  sectionWingId: z.string().trim().uuid("Invalid Wing/Tower ID format").optional(),
+  sectionWingId: z.string().trim().optional(),
   unitNumber: z
     .string()
     .trim()
@@ -219,11 +223,17 @@ export const updateUnitSchema = z.object({
   occupancyStatus: z
     .enum(["VACANT", "OCCUPIED_OWNER", "OCCUPIED_TENANT"] as const)
     .optional(),
+  societyId: z.string().trim().optional().nullable(),
 });
 
-export const societyUnitIdParamSchema = z.object({
-  unitId: z.string({ error: "Unit ID is required" }).trim().uuid("Invalid Unit ID format"),
-});
+export const societyUnitIdParamSchema = z
+  .object({
+    unitId: z.string().trim().optional(),
+    id: z.string().trim().optional(),
+  })
+  .refine((data) => Boolean(data.unitId || data.id), {
+    message: "Unit ID is required",
+  });
 
 export type RegisterSocietyInput = z.infer<typeof baseRegisterSocietySchema>;
 export type GetSocietyByCodeInput = z.infer<typeof getSocietyByCodeSchema>;

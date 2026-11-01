@@ -11,28 +11,95 @@ import {
 } from "./society.validation";
 
 /**
- * Resolve the authenticated admin's societyId
+ * Resolve the authenticated admin's societyId across params, query, body, JWT, and DB associations
  */
 const resolveAdminSocietyId = async (req: Request<any, any, any, any>): Promise<string> => {
-  const fromQueryOrBody =
-    (req.query?.societyId as string) ||
-    (req.body as any)?.societyId ||
-    req.user?.societyId;
+  const isSocietyWingCreationRoute =
+    Boolean(req.params?.id) &&
+    (req.originalUrl || req.path || "").includes("/societies/") &&
+    (req.originalUrl || req.path || "").endsWith("/wings");
 
-  if (fromQueryOrBody) {
-    return fromQueryOrBody;
+  const directCandidate = (
+    (isSocietyWingCreationRoute ? req.params?.id : "") ||
+    req.params?.societyId ||
+    req.query?.societyId ||
+    req.body?.societyId ||
+    req.user?.societyId ||
+    ""
+  )
+    .toString()
+    .trim();
+
+  if (directCandidate) {
+    return directCandidate;
+  }
+
+  // Try resolving from target wing if wingId is provided
+  const candidateWingId = req.params?.wingId || req.body?.sectionWingId || req.body?.wingId;
+  if (candidateWingId) {
+    const wing = await executeResilientPrismaQuery(() =>
+      prisma.sectionWing.findUnique({
+        where: { id: String(candidateWingId) },
+        select: { societyId: true },
+      })
+    );
+    if (wing?.societyId) {
+      return wing.societyId;
+    }
+  }
+
+  // Try resolving from target unit if unitId is provided
+  const candidateUnitId = req.params?.unitId;
+  if (candidateUnitId) {
+    const unit = await executeResilientPrismaQuery(() =>
+      prisma.unit.findUnique({
+        where: { id: String(candidateUnitId) },
+        select: { societyId: true },
+      })
+    );
+    if (unit?.societyId) {
+      return unit.societyId;
+    }
   }
 
   if (req.user?.id) {
+    try {
+      const dbUser = await executeResilientPrismaQuery(() =>
+        prisma.user.findUnique({
+          where: { id: req.user!.id },
+          select: {
+            societyId: true,
+            unit: { select: { societyId: true } },
+          },
+        })
+      );
+      if (dbUser?.societyId) return dbUser.societyId;
+      if (dbUser?.unit?.societyId) return dbUser.unit.societyId;
+    } catch {
+      // Ignore if optional user columns are migrating
+    }
+
     const membership = await executeResilientPrismaQuery(() =>
       prisma.unitMember.findFirst({
-        where: { userId: req.user!.id, approvalStatus: "APPROVED" },
+        where: { userId: req.user!.id },
         include: { unit: true },
+        orderBy: { createdAt: "desc" },
       })
     );
     if (membership?.unit?.societyId) {
       return membership.unit.societyId;
     }
+  }
+
+  // Fallback for Super Admin managing the primary registered society
+  const fallbackSociety = await executeResilientPrismaQuery(() =>
+    prisma.society.findFirst({
+      orderBy: { createdAt: "desc" },
+      select: { id: true },
+    })
+  );
+  if (fallbackSociety?.id) {
+    return fallbackSociety.id;
   }
 
   throw new AppError(400, "Society context not found for this administrator.");
@@ -187,18 +254,22 @@ export const createWing = async (
 
 /**
  * Update an existing Wing / Tower / Block
- * PUT /api/v1/societies/wings/:wingId
+ * PUT /api/v1/societies/wings/:wingId or PUT /api/v1/wings/:id
  */
 export const updateWing = async (
-  req: Request<{ wingId: string }, unknown, UpdateWingInput>,
+  req: Request<{ wingId?: string; id?: string }, unknown, UpdateWingInput>,
   res: Response,
   next: NextFunction
 ): Promise<void> => {
   try {
-    const societyId = await resolveAdminSocietyId(req);
+    const targetWingId = (req.params.wingId || req.params.id || "").trim();
+    const societyId = await resolveAdminSocietyId({
+      ...req,
+      params: { ...req.params, wingId: targetWingId },
+    } as any);
     const updated = await societyService.updateWing(
       societyId,
-      req.params.wingId,
+      targetWingId,
       req.body
     );
     successResponse(
@@ -214,18 +285,22 @@ export const updateWing = async (
 
 /**
  * Delete a Wing / Tower / Block
- * DELETE /api/v1/societies/wings/:wingId
+ * DELETE /api/v1/societies/wings/:wingId or DELETE /api/v1/wings/:id
  */
 export const deleteWing = async (
-  req: Request<{ wingId: string }>,
+  req: Request<{ wingId?: string; id?: string }>,
   res: Response,
   next: NextFunction
 ): Promise<void> => {
   try {
-    const societyId = await resolveAdminSocietyId(req);
+    const targetWingId = (req.params.wingId || req.params.id || "").trim();
+    const societyId = await resolveAdminSocietyId({
+      ...req,
+      params: { ...req.params, wingId: targetWingId },
+    } as any);
     const result = await societyService.deleteWing(
       societyId,
-      req.params.wingId
+      targetWingId
     );
     successResponse(
       res,
@@ -240,16 +315,28 @@ export const deleteWing = async (
 
 /**
  * Create a new Unit / Flat / House
- * POST /api/v1/societies/units
+ * POST /api/v1/wings/:wingId/units or POST /api/v1/societies/units
  */
 export const createUnit = async (
-  req: Request<unknown, unknown, CreateUnitInput>,
+  req: Request<{ wingId?: string }, unknown, CreateUnitInput>,
   res: Response,
   next: NextFunction
 ): Promise<void> => {
   try {
-    const societyId = await resolveAdminSocietyId(req);
-    const unit = await societyService.createUnit(societyId, req.body);
+    const targetWingId = (
+      req.params?.wingId ||
+      req.body?.sectionWingId ||
+      req.body?.wingId ||
+      ""
+    ).trim();
+    const societyId = await resolveAdminSocietyId({
+      ...req,
+      params: { ...req.params, wingId: targetWingId },
+    } as any);
+    const unit = await societyService.createUnit(societyId, {
+      ...req.body,
+      sectionWingId: targetWingId,
+    });
     successResponse(
       res,
       "Unit / Flat created successfully",
@@ -263,18 +350,22 @@ export const createUnit = async (
 
 /**
  * Update an existing Unit / Flat / House
- * PUT /api/v1/societies/units/:unitId
+ * PUT /api/v1/societies/units/:unitId or PUT /api/v1/units/:id
  */
 export const updateUnit = async (
-  req: Request<{ unitId: string }, unknown, UpdateUnitInput>,
+  req: Request<{ unitId?: string; id?: string }, unknown, UpdateUnitInput>,
   res: Response,
   next: NextFunction
 ): Promise<void> => {
   try {
-    const societyId = await resolveAdminSocietyId(req);
+    const targetUnitId = (req.params.unitId || req.params.id || "").trim();
+    const societyId = await resolveAdminSocietyId({
+      ...req,
+      params: { ...req.params, unitId: targetUnitId },
+    } as any);
     const updated = await societyService.updateUnit(
       societyId,
-      req.params.unitId,
+      targetUnitId,
       req.body
     );
     successResponse(
@@ -290,18 +381,22 @@ export const updateUnit = async (
 
 /**
  * Delete a Unit / Flat / House
- * DELETE /api/v1/societies/units/:unitId
+ * DELETE /api/v1/societies/units/:unitId or DELETE /api/v1/units/:id
  */
 export const deleteUnit = async (
-  req: Request<{ unitId: string }>,
+  req: Request<{ unitId?: string; id?: string }>,
   res: Response,
   next: NextFunction
 ): Promise<void> => {
   try {
-    const societyId = await resolveAdminSocietyId(req);
+    const targetUnitId = (req.params.unitId || req.params.id || "").trim();
+    const societyId = await resolveAdminSocietyId({
+      ...req,
+      params: { ...req.params, unitId: targetUnitId },
+    } as any);
     const result = await societyService.deleteUnit(
       societyId,
-      req.params.unitId
+      targetUnitId
     );
     successResponse(
       res,

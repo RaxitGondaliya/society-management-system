@@ -7,7 +7,7 @@ import { notFoundHandler, errorHandler } from "./middleware/error.middleware";
 // Route Imports
 import healthRoutes from "./modules/health/health.routes";
 import { HealthController } from "./modules/health/health.controller";
-import societyRoutes from "./modules/societies/society.routes";
+import societyRoutes, { wingsRouter, unitsRouter } from "./modules/societies/society.routes";
 import authRoutes from "./modules/auth/auth.routes";
 import userRoutes from "./modules/users/user.routes";
 import adminRoutes from "./modules/admin/admin.routes";
@@ -55,6 +55,10 @@ app.use("/api/v1", healthRoutes);
 // 6. Business Modules (Modules 1 through 11)
 app.use("/api/v1/societies", societyRoutes);
 app.use("/api/societies", societyRoutes);
+app.use("/api/v1/wings", wingsRouter);
+app.use("/api/wings", wingsRouter);
+app.use("/api/v1/units", unitsRouter);
+app.use("/api/units", unitsRouter);
 app.use("/api/v1/auth", authRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/v1/users", userRoutes);

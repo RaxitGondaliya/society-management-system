@@ -1067,12 +1067,12 @@ export const getSocietyDirectory = async (societyId: string) => {
     id: string;
     userId: string;
     fullName: string;
-    role: string;
     wingId: string;
     wingName: string;
     unitId: string;
     unitNumber: string;
     floorNumber: number | null;
+    occupancyStatus: string;
     residentType: string;
     isPrimaryHead: boolean;
     memberCount: number;
@@ -1081,7 +1081,6 @@ export const getSocietyDirectory = async (societyId: string) => {
       fullName: string;
       relation: string;
       age: number | null;
-      isEmergencyContact: boolean;
     }>;
   }> = [];
 
@@ -1092,20 +1091,26 @@ export const getSocietyDirectory = async (societyId: string) => {
         fullName: fm.fullName,
         relation: fm.relation,
         age: fm.age,
-        isEmergencyContact: fm.isEmergencyContact,
       }));
 
       for (const m of u.members) {
+        const computedOccupancy =
+          u.occupancyStatus && u.occupancyStatus !== "VACANT"
+            ? u.occupancyStatus
+            : m.memberType === "TENANT"
+            ? "OCCUPIED_TENANT"
+            : "OCCUPIED_OWNER";
+
         approvedMembersList.push({
           id: m.id,
           userId: m.user.id,
           fullName: m.user.fullName,
-          role: m.user.role,
           wingId: section.id,
           wingName: section.name,
           unitId: u.id,
           unitNumber: u.unitNumber,
           floorNumber: u.floorNumber,
+          occupancyStatus: computedOccupancy,
           residentType: m.memberType,
           isPrimaryHead: m.isPrimaryHead,
           memberCount: 1 + safeFamily.length,
