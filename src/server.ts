@@ -4,6 +4,7 @@ dotenv.config();
 import app from "./app";
 import { prisma } from "./config/prisma";
 import { flushStdout } from "./utils/sms.service";
+import { sanitizeErroneousAdminRoles } from "./modules/users/user.service";
 
 // Ensure stdout is unbuffered on Render / container environments
 flushStdout();
@@ -41,6 +42,9 @@ async function bootstrap() {
     } catch (schemaErr: any) {
       console.warn("[Server Notice] RBAC column check notice:", schemaErr?.message || schemaErr);
     }
+
+    // Reset any users who joined via "Join Society" and were erroneously assigned SUPER_ADMIN back to RESIDENT
+    await sanitizeErroneousAdminRoles();
 
     console.log("✅ Successfully connected to PostgreSQL (society_db) via Prisma.");
 

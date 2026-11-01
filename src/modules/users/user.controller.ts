@@ -8,6 +8,7 @@ import {
   UpdateOccupancyInput,
   UpdateMyProfileInput,
   AdminUpdateUserStatusInput,
+  AdminUpdateUserRoleInput,
 } from "./user.validation";
 
 /**
@@ -101,6 +102,33 @@ export const updateResidentStatus = async (
 };
 
 /**
+ * Super Admin Only: Delegate or change a member's role (RESIDENT, SUB_ADMIN, GUARD)
+ * PATCH /api/v1/admin/users/:id/role
+ */
+export const updateUserRole = async (
+  req: Request<{ id: string }, unknown, AdminUpdateUserRoleInput>,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    if (!req.user || !req.user.id) {
+      throw new AppError(401, "Authentication token missing or invalid");
+    }
+
+    const { id } = req.params;
+    const result = await userService.adminUpdateUserRole(
+      req.user.id,
+      id,
+      req.body,
+      req.user.societyId || undefined
+    );
+    successResponse(res, result.message, result, 200);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
  * Submit resident onboarding request to join a society unit
  * POST /api/v1/users/join
  */
@@ -122,8 +150,8 @@ export const joinSociety = async (
           fullName: result.user.fullName,
           email: result.user.email,
           phone: result.user.phone,
-          role: result.user.role, // 'RESIDENT'
-          status: result.status, // 'PENDING'
+          role: "RESIDENT",
+          status: "PENDING",
           residentType: result.memberType,
           societyId: result.society.id,
           unitId: result.unit.id,

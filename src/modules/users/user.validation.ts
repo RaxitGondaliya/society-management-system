@@ -229,9 +229,16 @@ export const adminUpdateUserStatusSchema = z.object({
   unitId: z.string().trim().uuid("Invalid unit ID format").optional().nullable(),
 });
 
+export const adminUpdateUserRoleSchema = z.object({
+  role: z.enum(["RESIDENT", "SUB_ADMIN", "GUARD"] as const, {
+    error: "Target role must be one of RESIDENT, SUB_ADMIN, or GUARD",
+  }),
+});
+
 export type JoinSocietyInput = z.infer<typeof joinSocietySchema>;
 export type ApprovalDecisionInput = z.infer<typeof approvalDecisionSchema>;
 export type UpdateOccupancyInput = z.infer<typeof updateOccupancySchema>;
 export type FamilyMemberInput = z.infer<typeof familyMemberSchema>;
 export type UpdateMyProfileInput = z.infer<typeof updateMyProfileSchema>;
 export type AdminUpdateUserStatusInput = z.infer<typeof adminUpdateUserStatusSchema>;
+export type AdminUpdateUserRoleInput = z.infer<typeof adminUpdateUserRoleSchema>;

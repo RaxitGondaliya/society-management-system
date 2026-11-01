@@ -12,6 +12,7 @@ import {
   updateMyProfileSchema,
   adminUserIdParamSchema,
   adminUpdateUserStatusSchema,
+  adminUpdateUserRoleSchema,
 } from "./user.validation";
 
 const router = Router();
@@ -61,6 +62,22 @@ router.patch(
     body: adminUpdateUserStatusSchema,
   }),
   userController.updateResidentStatus
+);
+
+/**
+ * @route   PATCH /api/v1/users/:id/role
+ * @desc    (Super Admin only) Change or delegate member role (RESIDENT, SUB_ADMIN, GUARD)
+ * @access  Protected (SUPER_ADMIN)
+ */
+router.patch(
+  "/:id/role",
+  authenticate,
+  authorizeRoles("SUPER_ADMIN"),
+  validate({
+    params: adminUserIdParamSchema,
+    body: adminUpdateUserRoleSchema,
+  }),
+  userController.updateUserRole
 );
 
 /**

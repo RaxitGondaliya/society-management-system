@@ -687,7 +687,9 @@ export const registerUserWithOtp = async (
   const normalizedPhone = `+91${cleanMobile}`;
   const rawEmail = (payload.email ?? payload.admin?.email ?? "").toString().trim().toLowerCase();
   const normalizedEmail = rawEmail.length > 0 ? rawEmail : null;
-  const resolvedRole = payload.role || "RESIDENT";
+  // SECURITY: Hardcode role to RESIDENT and status to PENDING for all standard registrations.
+  // Only the dedicated Society Registration endpoint (/api/v1/societies) creates a SUPER_ADMIN.
+  const resolvedRole = "RESIDENT";
 
   // 1. Unconditionally verify mobile OTP with otpService.verifyOtp (consumes OTP)
   let verification = await otpService.verifyOtp(normalizedPhone, payload.otp, {
@@ -749,18 +751,9 @@ export const registerUserWithOtp = async (
     }
   }
 
-  // 4. Create user (and optional unit membership) in PostgreSQL
-  const isAdminOrGuardRole = [
-    "SUPER_ADMIN",
-    "SOCIETY_ADMIN",
-    "SUB_ADMIN",
-    "COMMITTEE",
-    "GUARD",
-    "SECURITY",
-  ].includes((resolvedRole || "").toUpperCase());
-  const initialStatus = isAdminOrGuardRole ? "APPROVED" : "PENDING";
-  const initialResidentType =
-    payload.residentType || payload.memberType || (resolvedRole === "RESIDENT" ? "OWNER" : null);
+  // 4. Create user (and optional unit membership) in PostgreSQL with hardcoded RESIDENT role & PENDING status
+  const initialStatus = "PENDING";
+  const initialResidentType = payload.residentType || payload.memberType || "OWNER";
 
   const createdUser = await prisma.$transaction(async (tx) => {
     let newUser: any;
@@ -770,8 +763,8 @@ export const registerUserWithOtp = async (
           fullName: resolvedName,
           phone: normalizedPhone,
           email: normalizedEmail,
-          role: resolvedRole,
-          status: initialStatus,
+          role: "RESIDENT",
+          status: "PENDING",
           residentType: initialResidentType,
           societyId: payload.societyId || null,
           unitId: payload.unitId || null,
@@ -785,7 +778,7 @@ export const registerUserWithOtp = async (
           fullName: resolvedName,
           phone: normalizedPhone,
           email: normalizedEmail,
-          role: resolvedRole,
+          role: "RESIDENT",
           isActive: true,
         },
       });
@@ -803,8 +796,8 @@ export const registerUserWithOtp = async (
             unitId: targetUnit.id,
             userId: newUser.id,
             memberType: initialResidentType || "OWNER",
-            isPrimaryHead: isAdminOrGuardRole,
-            approvalStatus: initialStatus,
+            isPrimaryHead: false,
+            approvalStatus: "PENDING",
           },
         });
       }

@@ -9,7 +9,57 @@ import {
   UpdateOccupancyInput,
   UpdateMyProfileInput,
   AdminUpdateUserStatusInput,
+  AdminUpdateUserRoleInput,
 } from "./user.validation";
+
+/**
+ * Reset any users who joined via "Join Society" or standard registration
+ * and were erroneously assigned SUPER_ADMIN / SOCIETY_ADMIN back to RESIDENT.
+ * True society creators have an APPROVED UnitMember with isPrimaryHead = true.
+ */
+export const sanitizeErroneousAdminRoles = async (): Promise<void> => {
+  try {
+    // 1. Reset any user whose status is PENDING but role is SUPER_ADMIN or SOCIETY_ADMIN
+    await prisma.user.updateMany({
+      where: {
+        role: { in: ["SUPER_ADMIN", "SOCIETY_ADMIN"] },
+        status: "PENDING",
+      },
+      data: {
+        role: "RESIDENT",
+      },
+    });
+
+    // 2. Reset any user with role SUPER_ADMIN / SOCIETY_ADMIN who has a non-primary-head UnitMember (i.e. joined via Join Society)
+    const nonCreatorAdmins = await prisma.user.findMany({
+      where: {
+        role: { in: ["SUPER_ADMIN", "SOCIETY_ADMIN"] },
+        unitMembers: {
+          some: {
+            isPrimaryHead: false,
+          },
+          none: {
+            isPrimaryHead: true,
+          },
+        },
+      },
+      select: { id: true },
+    });
+
+    if (nonCreatorAdmins.length > 0) {
+      await prisma.user.updateMany({
+        where: {
+          id: { in: nonCreatorAdmins.map((u) => u.id) },
+        },
+        data: {
+          role: "RESIDENT",
+        },
+      });
+    }
+  } catch {
+    // Ignore if optional columns are still migrating
+  }
+};
 
 /**
  * Submit resident onboarding request to join a society unit
@@ -167,22 +217,27 @@ export const requestToJoinSociety = async (payload: JoinSocietyInput) => {
         });
       }
     } else {
-      const isAdminUser = ["SUPER_ADMIN", "SOCIETY_ADMIN", "SUB_ADMIN"].includes(
-        (user.role || "").toUpperCase()
-      );
+      // SECURITY: When joining a society via "Join My Society", strictly assign role: "RESIDENT" and status: "PENDING"
       try {
         user = await tx.user.update({
           where: { id: user.id },
           data: {
             fullName: payload.fullName || user.fullName,
+            role: "RESIDENT",
             residentType: payload.memberType,
-            ...(isAdminUser ? {} : { status: "PENDING" }),
+            status: "PENDING",
             societyId: society.id,
             unitId: unit.id,
           },
         });
       } catch {
-        // Ignore if optional columns are not yet migrated
+        user = await tx.user.update({
+          where: { id: user.id },
+          data: {
+            fullName: payload.fullName || user.fullName,
+            role: "RESIDENT",
+          },
+        });
       }
     }
 
@@ -211,12 +266,12 @@ export const requestToJoinSociety = async (payload: JoinSocietyInput) => {
       });
     }
 
-    // Generate valid JWT auth token for the resident session
+    // Generate valid JWT auth token for the resident session (strictly RESIDENT)
     const token = generateToken({
       id: user.id,
       phone: user.phone,
       email: user.email,
-      role: user.role, // 'RESIDENT'
+      role: "RESIDENT",
       societyId: society.id,
       unitId: unit.id,
     });
@@ -225,7 +280,7 @@ export const requestToJoinSociety = async (payload: JoinSocietyInput) => {
       token,
       message: "Registration completed successfully.",
       requestId: membership.id,
-      status: membership.approvalStatus,
+      status: "PENDING",
       memberType: membership.memberType,
       society: {
         id: society.id,
@@ -243,7 +298,7 @@ export const requestToJoinSociety = async (payload: JoinSocietyInput) => {
         fullName: user.fullName,
         phone: user.phone,
         email: user.email,
-        role: user.role,
+        role: "RESIDENT",
         status: "PENDING",
         residentType: payload.memberType,
         societyId: society.id,
@@ -262,6 +317,7 @@ export const requestToJoinSociety = async (payload: JoinSocietyInput) => {
  * GET /api/v1/users/me
  */
 export const getMyProfile = async (userId: string) => {
+  await sanitizeErroneousAdminRoles();
   let user: any = null;
   try {
     user = await executeResilientPrismaQuery(() =>
@@ -996,10 +1052,112 @@ export const adminUpdateUserStatus = async (
 };
 
 /**
+ * Super Admin Role Delegation & Management
+ * PATCH /api/v1/admin/users/:id/role
+ * - Strictly allows transitions to ['RESIDENT', 'SUB_ADMIN', 'GUARD']
+ * - Prevents self-demotion by Super Admin
+ * - Emits structured audit log with timestamp
+ */
+export const adminUpdateUserRole = async (
+  actorUserId: string,
+  targetId: string,
+  payload: AdminUpdateUserRoleInput,
+  adminSocietyId?: string
+) => {
+  const allowedTargetRoles = ["RESIDENT", "SUB_ADMIN", "GUARD"];
+  const targetRole = (payload.role || "").toUpperCase();
+
+  if (!allowedTargetRoles.includes(targetRole)) {
+    throw new AppError(
+      400,
+      "Invalid role transition. Allowed roles are RESIDENT, SUB_ADMIN, or GUARD."
+    );
+  }
+
+  // Resolve target user by either User.id or UnitMember.id
+  let targetUser = await executeResilientPrismaQuery(() =>
+    prisma.user.findUnique({
+      where: { id: targetId },
+    })
+  );
+
+  if (!targetUser) {
+    const membership = await executeResilientPrismaQuery(() =>
+      prisma.unitMember.findUnique({
+        where: { id: targetId },
+        include: { user: true },
+      })
+    );
+    targetUser = membership?.user || null;
+  }
+
+  if (!targetUser) {
+    throw new AppError(404, "Target member not found.");
+  }
+
+  // Prevent self-demotion
+  if (targetUser.id === actorUserId) {
+    throw new AppError(
+      400,
+      "Forbidden: Super Admin cannot demote or modify their own role."
+    );
+  }
+
+  const previousRole = targetUser.role || "RESIDENT";
+
+  // Update user role in database
+  let updatedUser: any;
+  try {
+    updatedUser = await executeResilientPrismaQuery(() =>
+      prisma.user.update({
+        where: { id: targetUser!.id },
+        data: {
+          role: targetRole,
+          status: "APPROVED",
+          ...(adminSocietyId && !targetUser!.societyId ? { societyId: adminSocietyId } : {}),
+        },
+      })
+    );
+  } catch {
+    updatedUser = await executeResilientPrismaQuery(() =>
+      prisma.user.update({
+        where: { id: targetUser!.id },
+        data: {
+          role: targetRole,
+        },
+      })
+    );
+  }
+
+  const timestamp = new Date().toISOString();
+  const auditBanner = `\n========================================\n[ROLE CHANGE AUDIT]\nTimestamp: ${timestamp}\nActor (SUPER_ADMIN): ${actorUserId}\nTarget Member: ${updatedUser.fullName} (${updatedUser.id})\nTransition: ${previousRole} -> ${targetRole}\n========================================\n`;
+  process.stdout.write(auditBanner);
+  console.log(auditBanner);
+
+  return {
+    message: `${updatedUser.fullName}'s role has been updated to ${targetRole}.`,
+    audit: {
+      actorUserId,
+      targetUserId: updatedUser.id,
+      previousRole,
+      newRole: targetRole,
+      timestamp,
+    },
+    user: {
+      id: updatedUser.id,
+      fullName: updatedUser.fullName,
+      role: updatedUser.role,
+      status: updatedUser.status || "APPROVED",
+    },
+  };
+};
+
+/**
  * Fetch hierarchical society directory (Wings -> Units -> Members -> Family)
  * STRICT PRIVACY GUARD: Never expose phone numbers or personal email addresses in directory responses.
  */
 export const getSocietyDirectory = async (societyId: string) => {
+  await sanitizeErroneousAdminRoles();
   const society = await executeResilientPrismaQuery(() =>
     prisma.society.findUnique({
       where: { id: societyId },
@@ -1067,6 +1225,7 @@ export const getSocietyDirectory = async (societyId: string) => {
     id: string;
     userId: string;
     fullName: string;
+    role: string;
     wingId: string;
     wingName: string;
     unitId: string;
@@ -1105,6 +1264,7 @@ export const getSocietyDirectory = async (societyId: string) => {
           id: m.id,
           userId: m.user.id,
           fullName: m.user.fullName,
+          role: m.user.role || "RESIDENT",
           wingId: section.id,
           wingName: section.name,
           unitId: u.id,

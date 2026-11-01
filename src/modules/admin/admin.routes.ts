@@ -6,6 +6,7 @@ import * as userController from "../users/user.controller";
 import {
   adminUserIdParamSchema,
   adminUpdateUserStatusSchema,
+  adminUpdateUserRoleSchema,
 } from "../users/user.validation";
 
 const router = Router();
@@ -36,6 +37,22 @@ router.patch(
     body: adminUpdateUserStatusSchema,
   }),
   userController.updateResidentStatus
+);
+
+/**
+ * @route   PATCH /api/v1/admin/users/:id/role
+ * @desc    (Super Admin only) Change or delegate member role (RESIDENT, SUB_ADMIN, GUARD)
+ * @access  Protected (SUPER_ADMIN)
+ */
+router.patch(
+  "/users/:id/role",
+  authenticate,
+  authorizeRoles("SUPER_ADMIN"),
+  validate({
+    params: adminUserIdParamSchema,
+    body: adminUpdateUserRoleSchema,
+  }),
+  userController.updateUserRole
 );
 
 export default router;
