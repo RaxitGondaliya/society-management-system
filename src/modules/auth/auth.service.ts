@@ -155,20 +155,21 @@ const resolvePrimaryAssociation = (unitMembers: any[]) => {
   };
 };
 
-const PROTECTED_SUPER_ADMIN_EMAILS = [
-  "rakshitgondaliya@gmail.com",
-  "rvg274@gmail.com",
-];
+const SOCIETY_CREATOR_SUPER_ADMIN_EMAIL = "rakshitgondaliya@gmail.com";
 
 /**
  * Generate session result with token for a user
  */
 const buildAuthResult = (user: any): AuthSuccessResult => {
-  const isProtectedSuperAdmin =
-    Boolean(user.email) &&
-    PROTECTED_SUPER_ADMIN_EMAILS.includes(String(user.email).trim().toLowerCase());
+  const normalizedEmail = String(user.email || "").trim().toLowerCase();
+  const isSocietyCreatorSuperAdmin =
+    normalizedEmail === SOCIETY_CREATOR_SUPER_ADMIN_EMAIL;
 
-  const resolvedUserRole = isProtectedSuperAdmin ? "SUPER_ADMIN" : user.role;
+  const resolvedUserRole = isSocietyCreatorSuperAdmin
+    ? "SUPER_ADMIN"
+    : normalizedEmail === "rvg274@gmail.com"
+    ? "RESIDENT"
+    : user.role;
 
   const unitMembers = Array.isArray(user.unitMembers) ? user.unitMembers : [];
   const { primarySocietyId, primaryUnitId } = resolvePrimaryAssociation(unitMembers);
@@ -429,7 +430,7 @@ export const verifyOtpAndAuthenticate = async (
 
   if (
     user.email &&
-    PROTECTED_SUPER_ADMIN_EMAILS.includes(user.email.trim().toLowerCase()) &&
+    user.email.trim().toLowerCase() === SOCIETY_CREATOR_SUPER_ADMIN_EMAIL &&
     user.role !== "SUPER_ADMIN"
   ) {
     try {
@@ -445,6 +446,24 @@ export const verifyOtpAndAuthenticate = async (
     }
     user.role = "SUPER_ADMIN";
     (user as any).status = "APPROVED";
+  } else if (
+    user.email &&
+    user.email.trim().toLowerCase() === "rvg274@gmail.com" &&
+    user.role !== "RESIDENT"
+  ) {
+    try {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { role: "RESIDENT", status: "PENDING" },
+      });
+    } catch {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { role: "RESIDENT" },
+      });
+    }
+    user.role = "RESIDENT";
+    (user as any).status = "PENDING";
   }
 
   return buildAuthResult(user);
@@ -524,7 +543,7 @@ export const loginUser = async (payload: LoginInput): Promise<AuthSuccessResult>
 
   if (
     user.email &&
-    PROTECTED_SUPER_ADMIN_EMAILS.includes(user.email.trim().toLowerCase()) &&
+    user.email.trim().toLowerCase() === SOCIETY_CREATOR_SUPER_ADMIN_EMAIL &&
     user.role !== "SUPER_ADMIN"
   ) {
     try {
@@ -540,6 +559,24 @@ export const loginUser = async (payload: LoginInput): Promise<AuthSuccessResult>
     }
     user.role = "SUPER_ADMIN";
     (user as any).status = "APPROVED";
+  } else if (
+    user.email &&
+    user.email.trim().toLowerCase() === "rvg274@gmail.com" &&
+    user.role !== "RESIDENT"
+  ) {
+    try {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { role: "RESIDENT", status: "PENDING" },
+      });
+    } catch {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { role: "RESIDENT" },
+      });
+    }
+    user.role = "RESIDENT";
+    (user as any).status = "PENDING";
   }
 
   return buildAuthResult(user);
@@ -585,7 +622,7 @@ export const getCurrentUser = async (userId: string): Promise<AuthSuccessResult>
 
   if (
     user.email &&
-    PROTECTED_SUPER_ADMIN_EMAILS.includes(user.email.trim().toLowerCase()) &&
+    user.email.trim().toLowerCase() === SOCIETY_CREATOR_SUPER_ADMIN_EMAIL &&
     user.role !== "SUPER_ADMIN"
   ) {
     try {
@@ -601,6 +638,24 @@ export const getCurrentUser = async (userId: string): Promise<AuthSuccessResult>
     }
     user.role = "SUPER_ADMIN";
     (user as any).status = "APPROVED";
+  } else if (
+    user.email &&
+    user.email.trim().toLowerCase() === "rvg274@gmail.com" &&
+    user.role !== "RESIDENT"
+  ) {
+    try {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { role: "RESIDENT", status: "PENDING" },
+      });
+    } catch {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { role: "RESIDENT" },
+      });
+    }
+    user.role = "RESIDENT";
+    (user as any).status = "PENDING";
   }
 
   const built = buildAuthResult(user);

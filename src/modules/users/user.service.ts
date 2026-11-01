@@ -12,32 +12,27 @@ import {
   AdminUpdateUserRoleInput,
 } from "./user.validation";
 
-const PROTECTED_SUPER_ADMIN_EMAILS = [
-  "rakshitgondaliya@gmail.com",
-  "rvg274@gmail.com",
-];
+const SOCIETY_CREATOR_SUPER_ADMIN_EMAIL = "rakshitgondaliya@gmail.com";
 
 /**
- * Restore Super Admin privileges for designated Super Admin accounts
- * (rakshitgondaliya@gmail.com and rvg274@gmail.com) so they always retain
- * role: "SUPER_ADMIN" and status: "APPROVED" and bypass any pending screen.
- * Never performs blanket RESIDENT role resets.
+ * Enforce strict Society Creator vs Join Resident role separation:
+ * 1. Society Creator (rakshitgondaliya@gmail.com) -> role: "SUPER_ADMIN", status: "APPROVED"
+ * 2. Joined Residents (including rvg274@gmail.com and any non-creator resident) -> role: "RESIDENT"
  */
 export const restoreSuperAdminAccounts = async (): Promise<void> => {
   try {
-    const adminUsers = await prisma.user.findMany({
+    // 1. Ensure Society Creator (rakshitgondaliya@gmail.com) is strictly SUPER_ADMIN and APPROVED
+    const creatorUser = await prisma.user.findFirst({
       where: {
-        OR: PROTECTED_SUPER_ADMIN_EMAILS.map((email) => ({
-          email: { equals: email, mode: "insensitive" as const },
-        })),
+        email: { equals: SOCIETY_CREATOR_SUPER_ADMIN_EMAIL, mode: "insensitive" },
       },
-      select: { id: true, email: true, role: true, status: true },
+      select: { id: true },
     });
 
-    for (const adminUser of adminUsers) {
+    if (creatorUser) {
       try {
         await prisma.user.update({
-          where: { id: adminUser.id },
+          where: { id: creatorUser.id },
           data: {
             role: "SUPER_ADMIN",
             status: "APPROVED",
@@ -45,24 +40,86 @@ export const restoreSuperAdminAccounts = async (): Promise<void> => {
         });
       } catch {
         await prisma.user.update({
-          where: { id: adminUser.id },
+          where: { id: creatorUser.id },
           data: {
             role: "SUPER_ADMIN",
           },
         });
       }
 
-      // Also ensure their UnitMember associations are APPROVED so they never see a pending screen
       await prisma.unitMember.updateMany({
-        where: { userId: adminUser.id },
+        where: { userId: creatorUser.id },
         data: {
           approvalStatus: "APPROVED",
           isPrimaryHead: true,
         },
       });
     }
+
+    // 2. Ensure rvg274@gmail.com and any other non-creator joined users are strictly RESIDENT (never SUPER_ADMIN)
+    const rvgUser = await prisma.user.findFirst({
+      where: {
+        email: { equals: "rvg274@gmail.com", mode: "insensitive" },
+      },
+      include: {
+        unitMembers: true,
+      },
+    });
+
+    if (rvgUser && rvgUser.role !== "RESIDENT") {
+      try {
+        await prisma.user.update({
+          where: { id: rvgUser.id },
+          data: {
+            role: "RESIDENT",
+            status: "PENDING",
+          },
+        });
+      } catch {
+        await prisma.user.update({
+          where: { id: rvgUser.id },
+          data: {
+            role: "RESIDENT",
+          },
+        });
+      }
+
+      await prisma.unitMember.updateMany({
+        where: { userId: rvgUser.id },
+        data: {
+          isPrimaryHead: false,
+          approvalStatus: "PENDING",
+        },
+      });
+    }
+
+    // Also ensure any other user (excluding rakshitgondaliya@gmail.com) who joined via Join Society (isPrimaryHead = false) is RESIDENT
+    const erroneouslyPromotedResidents = await prisma.user.findMany({
+      where: {
+        role: { in: ["SUPER_ADMIN", "SOCIETY_ADMIN"] },
+        NOT: {
+          email: { equals: SOCIETY_CREATOR_SUPER_ADMIN_EMAIL, mode: "insensitive" },
+        },
+        unitMembers: {
+          some: { isPrimaryHead: false },
+          none: { isPrimaryHead: true },
+        },
+      },
+      select: { id: true },
+    });
+
+    if (erroneouslyPromotedResidents.length > 0) {
+      await prisma.user.updateMany({
+        where: {
+          id: { in: erroneouslyPromotedResidents.map((u) => u.id) },
+        },
+        data: {
+          role: "RESIDENT",
+        },
+      });
+    }
   } catch (err: any) {
-    console.warn("[RBAC Restore] Super Admin restoration check warning:", err?.message || err);
+    console.warn("[RBAC Restore] Role enforcement check warning:", err?.message || err);
   }
 };
 
@@ -222,24 +279,15 @@ export const requestToJoinSociety = async (payload: JoinSocietyInput) => {
         });
       }
     } else {
-      // SECURITY: When joining a society via "Join My Society", assign role: "RESIDENT" and status: "PENDING"
-      // EXCEPT if the account is a protected SUPER_ADMIN (prevent accidental demotion of Super Admin accounts).
-      const isProtectedSuperAdmin =
-        user.role === "SUPER_ADMIN" ||
-        (user.email &&
-          PROTECTED_SUPER_ADMIN_EMAILS.includes(user.email.trim().toLowerCase()));
-
-      const assignedRole = isProtectedSuperAdmin ? "SUPER_ADMIN" : "RESIDENT";
-      const assignedStatus = isProtectedSuperAdmin ? "APPROVED" : "PENDING";
-
+      // SECURITY: Endpoint B ("Join My Society") ALWAYS assigns role: "RESIDENT" and status: "PENDING"
       try {
         user = await tx.user.update({
           where: { id: user.id },
           data: {
             fullName: payload.fullName || user.fullName,
-            role: assignedRole,
+            role: "RESIDENT",
             residentType: payload.memberType,
-            status: assignedStatus,
+            status: "PENDING",
             societyId: society.id,
             unitId: unit.id,
           },
@@ -249,7 +297,7 @@ export const requestToJoinSociety = async (payload: JoinSocietyInput) => {
           where: { id: user.id },
           data: {
             fullName: payload.fullName || user.fullName,
-            role: assignedRole,
+            role: "RESIDENT",
           },
         });
       }
@@ -423,11 +471,15 @@ export const getMyProfile = async (userId: string) => {
     throw new AppError(404, "User profile not found.");
   }
 
-  const isProtectedSuperAdmin =
-    Boolean(user.email) &&
-    PROTECTED_SUPER_ADMIN_EMAILS.includes(String(user.email).trim().toLowerCase());
+  const normalizedEmail = String(user.email || "").trim().toLowerCase();
+  const isSocietyCreatorSuperAdmin =
+    normalizedEmail === SOCIETY_CREATOR_SUPER_ADMIN_EMAIL;
 
-  const resolvedUserRole = isProtectedSuperAdmin ? "SUPER_ADMIN" : user.role;
+  const resolvedUserRole = isSocietyCreatorSuperAdmin
+    ? "SUPER_ADMIN"
+    : normalizedEmail === "rvg274@gmail.com"
+    ? "RESIDENT"
+    : user.role;
 
   const memberships = Array.isArray(user.unitMembers) ? user.unitMembers : [];
   const approvedMembership = memberships.find(
