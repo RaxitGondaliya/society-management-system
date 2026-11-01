@@ -194,27 +194,57 @@ export const registerSociety = async (
           );
         }
 
-        // Upgrade role to SUPER_ADMIN if not already and synchronize contact
-        user = await tx.user.update({
-          where: { id: user.id },
-          data: {
-            role: "SUPER_ADMIN",
-            fullName: adminFullName || user.fullName,
-            phone: adminPhone,
-            ...(adminEmail && !user.email ? { email: adminEmail } : {}),
-          },
-        });
+        // Upgrade role to SUPER_ADMIN, status to APPROVED, and link societyId
+        try {
+          user = await tx.user.update({
+            where: { id: user.id },
+            data: {
+              role: "SUPER_ADMIN",
+              status: "APPROVED",
+              residentType: "OWNER",
+              societyId: society.id,
+              fullName: adminFullName || user.fullName,
+              phone: adminPhone,
+              ...(adminEmail && !user.email ? { email: adminEmail } : {}),
+            },
+          });
+        } catch {
+          user = await tx.user.update({
+            where: { id: user.id },
+            data: {
+              role: "SUPER_ADMIN",
+              fullName: adminFullName || user.fullName,
+              phone: adminPhone,
+              ...(adminEmail && !user.email ? { email: adminEmail } : {}),
+            },
+          });
+        }
       } else {
-        // Create Admin User with SUPER_ADMIN role in Neon DB
-        user = await tx.user.create({
-          data: {
-            phone: adminPhone,
-            email: adminEmail,
-            fullName: adminFullName,
-            role: "SUPER_ADMIN",
-            isActive: true,
-          },
-        });
+        // Create Admin User with SUPER_ADMIN role & APPROVED status in Neon DB
+        try {
+          user = await tx.user.create({
+            data: {
+              phone: adminPhone,
+              email: adminEmail,
+              fullName: adminFullName,
+              role: "SUPER_ADMIN",
+              status: "APPROVED",
+              residentType: "OWNER",
+              societyId: society.id,
+              isActive: true,
+            },
+          });
+        } catch {
+          user = await tx.user.create({
+            data: {
+              phone: adminPhone,
+              email: adminEmail,
+              fullName: adminFullName,
+              role: "SUPER_ADMIN",
+              isActive: true,
+            },
+          });
+        }
       }
 
       // Step d: Batch-create SectionWings and Units based on Property Layout

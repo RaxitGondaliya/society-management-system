@@ -54,6 +54,17 @@ router.post(
 );
 
 /**
+ * @route   POST /api/v1/societies/create
+ * @desc    Create society alias endpoint (assigns creator role: SUPER_ADMIN, status: APPROVED)
+ * @access  Public
+ */
+router.post(
+  "/create",
+  validate({ body: registerSocietySchema }),
+  societyController.registerSociety
+);
+
+/**
  * @route   GET /api/v1/societies/code/:code
  * @desc    Fetch public society basic info and units by unique society code
  * @access  Public (for resident onboarding)

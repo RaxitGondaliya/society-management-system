@@ -155,10 +155,21 @@ const resolvePrimaryAssociation = (unitMembers: any[]) => {
   };
 };
 
+const PROTECTED_SUPER_ADMIN_EMAILS = [
+  "rakshitgondaliya@gmail.com",
+  "rvg274@gmail.com",
+];
+
 /**
  * Generate session result with token for a user
  */
 const buildAuthResult = (user: any): AuthSuccessResult => {
+  const isProtectedSuperAdmin =
+    Boolean(user.email) &&
+    PROTECTED_SUPER_ADMIN_EMAILS.includes(String(user.email).trim().toLowerCase());
+
+  const resolvedUserRole = isProtectedSuperAdmin ? "SUPER_ADMIN" : user.role;
+
   const unitMembers = Array.isArray(user.unitMembers) ? user.unitMembers : [];
   const { primarySocietyId, primaryUnitId } = resolvePrimaryAssociation(unitMembers);
   const approvedMembership = unitMembers.find(
@@ -173,7 +184,7 @@ const buildAuthResult = (user: any): AuthSuccessResult => {
     "COMMITTEE",
     "GUARD",
     "SECURITY",
-  ].includes((user.role || "").toUpperCase());
+  ].includes((resolvedUserRole || "").toUpperCase());
 
   const effectiveStatus = isAdminOrGuard
     ? "APPROVED"
@@ -190,7 +201,7 @@ const buildAuthResult = (user: any): AuthSuccessResult => {
     id: user.id,
     phone: user.phone,
     email: user.email,
-    role: user.role,
+    role: resolvedUserRole,
     societyId: effectiveSocietyId,
     unitId: effectiveUnitId,
   });
@@ -202,7 +213,7 @@ const buildAuthResult = (user: any): AuthSuccessResult => {
       email: user.email,
       name: user.fullName,
       fullName: user.fullName,
-      role: user.role,
+      role: resolvedUserRole,
       status: effectiveStatus,
       residentType: effectiveResidentType,
       societyId: effectiveSocietyId || null,
@@ -416,6 +427,26 @@ export const verifyOtpAndAuthenticate = async (
     );
   }
 
+  if (
+    user.email &&
+    PROTECTED_SUPER_ADMIN_EMAILS.includes(user.email.trim().toLowerCase()) &&
+    user.role !== "SUPER_ADMIN"
+  ) {
+    try {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { role: "SUPER_ADMIN", status: "APPROVED" },
+      });
+    } catch {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { role: "SUPER_ADMIN" },
+      });
+    }
+    user.role = "SUPER_ADMIN";
+    (user as any).status = "APPROVED";
+  }
+
   return buildAuthResult(user);
 };
 
@@ -491,6 +522,26 @@ export const loginUser = async (payload: LoginInput): Promise<AuthSuccessResult>
     );
   }
 
+  if (
+    user.email &&
+    PROTECTED_SUPER_ADMIN_EMAILS.includes(user.email.trim().toLowerCase()) &&
+    user.role !== "SUPER_ADMIN"
+  ) {
+    try {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { role: "SUPER_ADMIN", status: "APPROVED" },
+      });
+    } catch {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { role: "SUPER_ADMIN" },
+      });
+    }
+    user.role = "SUPER_ADMIN";
+    (user as any).status = "APPROVED";
+  }
+
   return buildAuthResult(user);
 };
 
@@ -530,6 +581,26 @@ export const getCurrentUser = async (userId: string): Promise<AuthSuccessResult>
 
   if (!user.isActive) {
     throw new AppError(403, "User account is deactivated. Access revoked.");
+  }
+
+  if (
+    user.email &&
+    PROTECTED_SUPER_ADMIN_EMAILS.includes(user.email.trim().toLowerCase()) &&
+    user.role !== "SUPER_ADMIN"
+  ) {
+    try {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { role: "SUPER_ADMIN", status: "APPROVED" },
+      });
+    } catch {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { role: "SUPER_ADMIN" },
+      });
+    }
+    user.role = "SUPER_ADMIN";
+    (user as any).status = "APPROVED";
   }
 
   const built = buildAuthResult(user);
