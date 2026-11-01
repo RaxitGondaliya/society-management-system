@@ -247,6 +247,12 @@ export const registerSociety = async (
         }
       }
 
+      // Step c2: Record this user as the society OWNER (sole source of truth for SUPER_ADMIN)
+      await tx.society.update({
+        where: { id: society.id },
+        data: { ownerUserId: user.id },
+      });
+
       // Step d: Batch-create SectionWings and Units based on Property Layout
     const createdSections: Array<{ id: string; name: string; unitCount: number }> = [];
     let firstUnit: {

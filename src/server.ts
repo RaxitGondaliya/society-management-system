@@ -4,7 +4,7 @@ dotenv.config();
 import app from "./app";
 import { prisma } from "./config/prisma";
 import { flushStdout } from "./utils/sms.service";
-import { restoreSuperAdminAccounts } from "./modules/users/user.service";
+import { enforceSocietyRoleIntegrity } from "./modules/users/user.service";
 
 // Ensure stdout is unbuffered on Render / container environments
 flushStdout();
@@ -43,8 +43,23 @@ async function bootstrap() {
       console.warn("[Server Notice] RBAC column check notice:", schemaErr?.message || schemaErr);
     }
 
-    // Restore Super Admin accounts (rakshitgondaliya@gmail.com, rvg274@gmail.com) to SUPER_ADMIN & APPROVED
-    await restoreSuperAdminAccounts();
+    // Idempotently add Society.ownerUserId and enforce strict RESIDENT / PENDING column defaults
+    try {
+      await prisma.$executeRawUnsafe(
+        `ALTER TABLE "Society" ADD COLUMN IF NOT EXISTS "ownerUserId" TEXT;`
+      );
+      await prisma.$executeRawUnsafe(
+        `ALTER TABLE "User" ALTER COLUMN "role" SET DEFAULT 'RESIDENT';`
+      );
+      await prisma.$executeRawUnsafe(
+        `ALTER TABLE "User" ALTER COLUMN "status" SET DEFAULT 'PENDING';`
+      );
+    } catch (schemaErr: any) {
+      console.warn("[Server Notice] Ownership column check notice:", schemaErr?.message || schemaErr);
+    }
+
+    // Society Creator (Society.ownerUserId) -> SUPER_ADMIN/APPROVED; all other elevated admins -> RESIDENT
+    await enforceSocietyRoleIntegrity();
 
     console.log("✅ Successfully connected to PostgreSQL (society_db) via Prisma.");
 

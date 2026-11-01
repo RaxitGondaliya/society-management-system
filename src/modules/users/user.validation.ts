@@ -210,10 +210,9 @@ export const adminUpdateUserStatusSchema = z.object({
   status: z.enum(["APPROVED", "REJECTED", "PENDING"] as const, {
     error: "status must be APPROVED, REJECTED, or PENDING",
   }),
+  // SECURITY: SUPER_ADMIN / SOCIETY_ADMIN can never be granted via approval; only Society Registration creates them.
   role: z
     .enum([
-      "SUPER_ADMIN",
-      "SOCIETY_ADMIN",
       "SUB_ADMIN",
       "RESIDENT",
       "GUARD",

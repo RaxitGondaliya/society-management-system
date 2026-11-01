@@ -155,21 +155,12 @@ const resolvePrimaryAssociation = (unitMembers: any[]) => {
   };
 };
 
-const SOCIETY_CREATOR_SUPER_ADMIN_EMAIL = "rakshitgondaliya@gmail.com";
-
 /**
  * Generate session result with token for a user
  */
 const buildAuthResult = (user: any): AuthSuccessResult => {
-  const normalizedEmail = String(user.email || "").trim().toLowerCase();
-  const isSocietyCreatorSuperAdmin =
-    normalizedEmail === SOCIETY_CREATOR_SUPER_ADMIN_EMAIL;
-
-  const resolvedUserRole = isSocietyCreatorSuperAdmin
-    ? "SUPER_ADMIN"
-    : normalizedEmail === "rvg274@gmail.com"
-    ? "RESIDENT"
-    : user.role;
+  // Role is taken strictly from the persisted DB value (no client or email-based overrides)
+  const resolvedUserRole = user.role || "RESIDENT";
 
   const unitMembers = Array.isArray(user.unitMembers) ? user.unitMembers : [];
   const { primarySocietyId, primaryUnitId } = resolvePrimaryAssociation(unitMembers);
@@ -428,43 +419,6 @@ export const verifyOtpAndAuthenticate = async (
     );
   }
 
-  if (
-    user.email &&
-    user.email.trim().toLowerCase() === SOCIETY_CREATOR_SUPER_ADMIN_EMAIL &&
-    user.role !== "SUPER_ADMIN"
-  ) {
-    try {
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { role: "SUPER_ADMIN", status: "APPROVED" },
-      });
-    } catch {
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { role: "SUPER_ADMIN" },
-      });
-    }
-    user.role = "SUPER_ADMIN";
-    (user as any).status = "APPROVED";
-  } else if (
-    user.email &&
-    user.email.trim().toLowerCase() === "rvg274@gmail.com" &&
-    user.role !== "RESIDENT"
-  ) {
-    try {
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { role: "RESIDENT", status: "PENDING" },
-      });
-    } catch {
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { role: "RESIDENT" },
-      });
-    }
-    user.role = "RESIDENT";
-    (user as any).status = "PENDING";
-  }
 
   return buildAuthResult(user);
 };
@@ -541,43 +495,6 @@ export const loginUser = async (payload: LoginInput): Promise<AuthSuccessResult>
     );
   }
 
-  if (
-    user.email &&
-    user.email.trim().toLowerCase() === SOCIETY_CREATOR_SUPER_ADMIN_EMAIL &&
-    user.role !== "SUPER_ADMIN"
-  ) {
-    try {
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { role: "SUPER_ADMIN", status: "APPROVED" },
-      });
-    } catch {
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { role: "SUPER_ADMIN" },
-      });
-    }
-    user.role = "SUPER_ADMIN";
-    (user as any).status = "APPROVED";
-  } else if (
-    user.email &&
-    user.email.trim().toLowerCase() === "rvg274@gmail.com" &&
-    user.role !== "RESIDENT"
-  ) {
-    try {
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { role: "RESIDENT", status: "PENDING" },
-      });
-    } catch {
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { role: "RESIDENT" },
-      });
-    }
-    user.role = "RESIDENT";
-    (user as any).status = "PENDING";
-  }
 
   return buildAuthResult(user);
 };
@@ -620,43 +537,6 @@ export const getCurrentUser = async (userId: string): Promise<AuthSuccessResult>
     throw new AppError(403, "User account is deactivated. Access revoked.");
   }
 
-  if (
-    user.email &&
-    user.email.trim().toLowerCase() === SOCIETY_CREATOR_SUPER_ADMIN_EMAIL &&
-    user.role !== "SUPER_ADMIN"
-  ) {
-    try {
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { role: "SUPER_ADMIN", status: "APPROVED" },
-      });
-    } catch {
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { role: "SUPER_ADMIN" },
-      });
-    }
-    user.role = "SUPER_ADMIN";
-    (user as any).status = "APPROVED";
-  } else if (
-    user.email &&
-    user.email.trim().toLowerCase() === "rvg274@gmail.com" &&
-    user.role !== "RESIDENT"
-  ) {
-    try {
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { role: "RESIDENT", status: "PENDING" },
-      });
-    } catch {
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { role: "RESIDENT" },
-      });
-    }
-    user.role = "RESIDENT";
-    (user as any).status = "PENDING";
-  }
 
   const built = buildAuthResult(user);
   return {

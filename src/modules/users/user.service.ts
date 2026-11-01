@@ -12,114 +12,117 @@ import {
   AdminUpdateUserRoleInput,
 } from "./user.validation";
 
-const SOCIETY_CREATOR_SUPER_ADMIN_EMAIL = "rakshitgondaliya@gmail.com";
+const ELEVATED_ADMIN_ROLES = ["SUPER_ADMIN", "SOCIETY_ADMIN"];
 
 /**
- * Enforce strict Society Creator vs Join Resident role separation:
- * 1. Society Creator (rakshitgondaliya@gmail.com) -> role: "SUPER_ADMIN", status: "APPROVED"
- * 2. Joined Residents (including rvg274@gmail.com and any non-creator resident) -> role: "RESIDENT"
+ * Enforce Society Creator vs Join Resident role integrity (idempotent, runs at server bootstrap).
+ *
+ * Source of truth: `Society.ownerUserId` (set ONLY by the Society Registration flow).
+ * 1. Backfill `ownerUserId` for legacy societies using the earliest UnitMember record in that
+ *    society (the creator's membership is created in the same transaction as the society).
+ * 2. Society owners  -> role: "SUPER_ADMIN", status: "APPROVED".
+ * 3. Any other user holding SUPER_ADMIN / SOCIETY_ADMIN (i.e. joined via "Join My Society")
+ *    -> role: "RESIDENT". Status stays APPROVED only if an admin already approved a membership,
+ *    otherwise PENDING.
+ *
+ * Delegated roles (SUB_ADMIN, GUARD) are never touched. No blanket UPDATE without a WHERE clause.
  */
-export const restoreSuperAdminAccounts = async (): Promise<void> => {
+export const enforceSocietyRoleIntegrity = async (): Promise<void> => {
   try {
-    // 1. Ensure Society Creator (rakshitgondaliya@gmail.com) is strictly SUPER_ADMIN and APPROVED
-    const creatorUser = await prisma.user.findFirst({
-      where: {
-        email: { equals: SOCIETY_CREATOR_SUPER_ADMIN_EMAIL, mode: "insensitive" },
-      },
+    // 1. Backfill missing society owners
+    const ownerlessSocieties = await prisma.society.findMany({
+      where: { ownerUserId: null },
       select: { id: true },
     });
 
-    if (creatorUser) {
-      try {
-        await prisma.user.update({
-          where: { id: creatorUser.id },
-          data: {
-            role: "SUPER_ADMIN",
-            status: "APPROVED",
-          },
-        });
-      } catch {
-        await prisma.user.update({
-          where: { id: creatorUser.id },
-          data: {
-            role: "SUPER_ADMIN",
-          },
+    for (const soc of ownerlessSocieties) {
+      const earliestMember = await prisma.unitMember.findFirst({
+        where: { unit: { societyId: soc.id } },
+        orderBy: { createdAt: "asc" },
+        select: { userId: true },
+      });
+      if (earliestMember) {
+        await prisma.society.update({
+          where: { id: soc.id },
+          data: { ownerUserId: earliestMember.userId },
         });
       }
-
-      await prisma.unitMember.updateMany({
-        where: { userId: creatorUser.id },
-        data: {
-          approvalStatus: "APPROVED",
-          isPrimaryHead: true,
-        },
-      });
     }
 
-    // 2. Ensure rvg274@gmail.com and any other non-creator joined users are strictly RESIDENT (never SUPER_ADMIN)
-    const rvgUser = await prisma.user.findFirst({
-      where: {
-        email: { equals: "rvg274@gmail.com", mode: "insensitive" },
-      },
-      include: {
-        unitMembers: true,
-      },
+    // 2. Promote / confirm society owners
+    const ownedSocieties = await prisma.society.findMany({
+      where: { ownerUserId: { not: null } },
+      select: { id: true, ownerUserId: true },
     });
+    const ownerIds = Array.from(
+      new Set(ownedSocieties.map((s) => s.ownerUserId as string))
+    );
 
-    if (rvgUser && rvgUser.role !== "RESIDENT") {
-      try {
-        await prisma.user.update({
-          where: { id: rvgUser.id },
-          data: {
-            role: "RESIDENT",
-            status: "PENDING",
-          },
-        });
-      } catch {
-        await prisma.user.update({
-          where: { id: rvgUser.id },
-          data: {
-            role: "RESIDENT",
-          },
-        });
-      }
-
-      await prisma.unitMember.updateMany({
-        where: { userId: rvgUser.id },
-        data: {
-          isPrimaryHead: false,
-          approvalStatus: "PENDING",
-        },
-      });
-    }
-
-    // Also ensure any other user (excluding rakshitgondaliya@gmail.com) who joined via Join Society (isPrimaryHead = false) is RESIDENT
-    const erroneouslyPromotedResidents = await prisma.user.findMany({
-      where: {
-        role: { in: ["SUPER_ADMIN", "SOCIETY_ADMIN"] },
-        NOT: {
-          email: { equals: SOCIETY_CREATOR_SUPER_ADMIN_EMAIL, mode: "insensitive" },
-        },
-        unitMembers: {
-          some: { isPrimaryHead: false },
-          none: { isPrimaryHead: true },
-        },
-      },
-      select: { id: true },
-    });
-
-    if (erroneouslyPromotedResidents.length > 0) {
+    if (ownerIds.length > 0) {
       await prisma.user.updateMany({
         where: {
-          id: { in: erroneouslyPromotedResidents.map((u) => u.id) },
+          id: { in: ownerIds },
+          OR: [{ role: { not: "SUPER_ADMIN" } }, { status: { not: "APPROVED" } }],
         },
+        data: { role: "SUPER_ADMIN", status: "APPROVED" },
+      });
+
+      for (const soc of ownedSocieties) {
+        await prisma.unitMember.updateMany({
+          where: {
+            userId: soc.ownerUserId as string,
+            unit: { societyId: soc.id },
+            approvalStatus: { not: "APPROVED" },
+          },
+          data: { approvalStatus: "APPROVED" },
+        });
+      }
+    }
+
+    // 3. Demote non-owner elevated admins back to RESIDENT
+    const wronglyElevated = await prisma.user.findMany({
+      where: {
+        role: { in: ELEVATED_ADMIN_ROLES },
+        ...(ownerIds.length > 0 ? { id: { notIn: ownerIds } } : {}),
+      },
+      select: {
+        id: true,
+        email: true,
+        unitMembers: { select: { approvalStatus: true } },
+      },
+    });
+
+    for (const u of wronglyElevated) {
+      const hasApprovedMembership = u.unitMembers.some(
+        (m) => m.approvalStatus === "APPROVED"
+      );
+      await prisma.user.update({
+        where: { id: u.id },
         data: {
           role: "RESIDENT",
+          status: hasApprovedMembership ? "APPROVED" : "PENDING",
         },
       });
+      const msg = `[RBAC INTEGRITY] Demoted non-creator ${u.email || u.id} from elevated admin to RESIDENT\n`;
+      process.stdout.write(msg);
     }
   } catch (err: any) {
-    console.warn("[RBAC Restore] Role enforcement check warning:", err?.message || err);
+    console.warn("[RBAC Integrity] Role enforcement check warning:", err?.message || err);
+  }
+};
+
+/**
+ * Returns true if the given user is the registered owner (creator) of any society.
+ */
+export const isSocietyOwner = async (userId: string): Promise<boolean> => {
+  try {
+    const owned = await prisma.society.findFirst({
+      where: { ownerUserId: userId },
+      select: { id: true },
+    });
+    return Boolean(owned);
+  } catch {
+    return false;
   }
 };
 
@@ -279,27 +282,42 @@ export const requestToJoinSociety = async (payload: JoinSocietyInput) => {
         });
       }
     } else {
-      // SECURITY: Endpoint B ("Join My Society") ALWAYS assigns role: "RESIDENT" and status: "PENDING"
-      try {
+      // SECURITY: Endpoint B ("Join My Society") ALWAYS assigns role: "RESIDENT" and status: "PENDING".
+      // Sole exception: a registered society OWNER (Society.ownerUserId) submitting a join request for
+      // another unit keeps their SUPER_ADMIN role for the society they created; the new membership
+      // itself is still created as PENDING below.
+      const ownedSociety = await tx.society.findFirst({
+        where: { ownerUserId: user.id },
+        select: { id: true },
+      });
+
+      if (ownedSociety) {
         user = await tx.user.update({
           where: { id: user.id },
-          data: {
-            fullName: payload.fullName || user.fullName,
-            role: "RESIDENT",
-            residentType: payload.memberType,
-            status: "PENDING",
-            societyId: society.id,
-            unitId: unit.id,
-          },
+          data: { fullName: payload.fullName || user.fullName },
         });
-      } catch {
-        user = await tx.user.update({
-          where: { id: user.id },
-          data: {
-            fullName: payload.fullName || user.fullName,
-            role: "RESIDENT",
-          },
-        });
+      } else {
+        try {
+          user = await tx.user.update({
+            where: { id: user.id },
+            data: {
+              fullName: payload.fullName || user.fullName,
+              role: "RESIDENT",
+              residentType: payload.memberType,
+              status: "PENDING",
+              societyId: society.id,
+              unitId: unit.id,
+            },
+          });
+        } catch {
+          user = await tx.user.update({
+            where: { id: user.id },
+            data: {
+              fullName: payload.fullName || user.fullName,
+              role: "RESIDENT",
+            },
+          });
+        }
       }
     }
 
@@ -328,12 +346,12 @@ export const requestToJoinSociety = async (payload: JoinSocietyInput) => {
       });
     }
 
-    // Generate valid JWT auth token for the resident session (strictly RESIDENT)
+    // Generate JWT auth token reflecting the persisted role (RESIDENT for every non-owner joiner)
     const token = generateToken({
       id: user.id,
       phone: user.phone,
       email: user.email,
-      role: "RESIDENT",
+      role: user.role || "RESIDENT",
       societyId: society.id,
       unitId: unit.id,
     });
@@ -379,7 +397,6 @@ export const requestToJoinSociety = async (payload: JoinSocietyInput) => {
  * GET /api/v1/users/me
  */
 export const getMyProfile = async (userId: string) => {
-  await restoreSuperAdminAccounts();
   let user: any = null;
   try {
     user = await executeResilientPrismaQuery(() =>
@@ -471,15 +488,7 @@ export const getMyProfile = async (userId: string) => {
     throw new AppError(404, "User profile not found.");
   }
 
-  const normalizedEmail = String(user.email || "").trim().toLowerCase();
-  const isSocietyCreatorSuperAdmin =
-    normalizedEmail === SOCIETY_CREATOR_SUPER_ADMIN_EMAIL;
-
-  const resolvedUserRole = isSocietyCreatorSuperAdmin
-    ? "SUPER_ADMIN"
-    : normalizedEmail === "rvg274@gmail.com"
-    ? "RESIDENT"
-    : user.role;
+  const resolvedUserRole = user.role || "RESIDENT";
 
   const memberships = Array.isArray(user.unitMembers) ? user.unitMembers : [];
   const approvedMembership = memberships.find(
@@ -1229,7 +1238,6 @@ export const adminUpdateUserRole = async (
  * STRICT PRIVACY GUARD: Never expose phone numbers or personal email addresses in directory responses.
  */
 export const getSocietyDirectory = async (societyId: string) => {
-  await restoreSuperAdminAccounts();
   const society = await executeResilientPrismaQuery(() =>
     prisma.society.findUnique({
       where: { id: societyId },

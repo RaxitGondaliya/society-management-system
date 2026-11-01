@@ -44,6 +44,9 @@ model Society {
   bankBeneficiaryName String?
   upiId              String?
   subscriptionPlan   String   @default("ACTIVE")
+  // User ID of the subscriber who created this society via the Society Registration flow.
+  // This is the ONLY source of truth for SUPER_ADMIN ownership.
+  ownerUserId        String?
   users              User[]   @relation("SocietyUsers")
   createdAt          DateTime @default(now())
 
@@ -125,6 +128,8 @@ model User {
   phone     String   @unique
   email     String?  @unique
   fullName  String
+  // SECURITY: role MUST default to RESIDENT and status MUST default to PENDING.
+  // Only the Society Registration flow may assign SUPER_ADMIN (see Society.ownerUserId).
   role             String   @default("RESIDENT") // 'SUPER_ADMIN', 'SOCIETY_ADMIN', 'SUB_ADMIN', 'RESIDENT', 'GUARD'
   residentType     String?  // 'OWNER', 'TENANT'
   status           String   @default("PENDING") // 'PENDING', 'APPROVED', 'REJECTED'
